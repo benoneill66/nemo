@@ -84,7 +84,7 @@ final class AppState: ObservableObject {
     var markedSegments: [TranscriptSegment] { segments.filter { $0.marked } }
 
     func memories(in category: Category) -> [Memory] {
-        memories.filter { $0.categoryEnum == category }
+        memories.filter { $0.categoryEnum == category && !$0.superseded }
             .sorted { $0.effectiveImportance != $1.effectiveImportance
                 ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
     }
@@ -354,7 +354,7 @@ final class AppState: ObservableObject {
                     self.createdSinceDedupe += out.created
                     if Config.dedupeEnabled, self.createdSinceDedupe >= Config.dedupeEveryNNew {
                         self.createdSinceDedupe = 0
-                        self.dedupeNow()
+                        self.maintainNow()
                     }
                 }
             } catch {
@@ -399,7 +399,8 @@ final class AppState: ObservableObject {
     /// Re-rank memories against the last little while of speech and merge into the live set:
     /// refresh anything that re-matched, keep recent matches decaying, drop the stale.
     private func refreshSurfaced() {
-        guard !memories.isEmpty else { if !surfaced.isEmpty { surfaced = [] }; return }
+        let live = liveMemories   // never surface archived (superseded) memories
+        guard !live.isEmpty else { if !surfaced.isEmpty { surfaced = [] }; return }
 
         let now = Date()
         let window = Config.surfaceWindowSeconds
@@ -413,11 +414,11 @@ final class AppState: ObservableObject {
         if Config.semanticSurfaceEnabled, embeddings.isAvailable {
             let neighbours = embeddings.search(recentText, limit: 20)
             let semantic = Dictionary(neighbours.map { ($0.id, $0.score) }, uniquingKeysWith: { a, _ in a })
-            hits = Surfacer.rankHybrid(recent: recentText, memories: memories, semantic: semantic,
+            hits = Surfacer.rankHybrid(recent: recentText, memories: live, semantic: semantic,
                                        semanticWeight: Config.semanticWeight, semanticFloor: Config.semanticFloor,
                                        minScore: Config.surfaceMinScore, limit: Config.surfaceMax)
         } else {
-            hits = Surfacer.rank(recent: recentText, memories: memories,
+            hits = Surfacer.rank(recent: recentText, memories: live,
                                  minScore: Config.surfaceMinScore, limit: Config.surfaceMax)
         }
         let hitIds = Set(hits.map { $0.memory.id })
@@ -482,7 +483,7 @@ final class AppState: ObservableObject {
         guard !isBriefing, !memories.isEmpty else { return }
         isBriefing = true
         briefingDismissed = false
-        let snapshot = memories, sess = sessions, model = Config.memoryModel
+        let snapshot = liveMemories, sess = sessions, model = Config.memoryModel
         Task {
             do {
                 let text = try await Briefer.generate(memories: snapshot, sessions: sess, model: model)
@@ -640,16 +641,21 @@ final class AppState: ObservableObject {
         return usage.rollup(since: since)
     }
 
-    // MARK: - Graph maintenance: dedupe (plan 03)
+    // MARK: - Graph maintenance: dedupe + supersede (plans 03 & 04)
 
-    /// Generate duplicate candidates on-device, adjudicate them with the cheap model, and merge.
-    /// No-op while other LLM work is in flight or there's nothing to compare.
-    func dedupeNow() {
+    /// Memories that are live (not archived by a supersession).
+    var liveMemories: [Memory] { memories.filter { !$0.superseded } }
+    var archivedMemories: [Memory] { memories.filter { $0.superseded } }
+
+    /// Generate duplicate + contradiction candidates on-device, adjudicate with the cheap model,
+    /// and apply merges/supersessions. No-op while other LLM work is in flight.
+    func maintainNow() {
         guard Config.dedupeEnabled, !isConsolidating, !isDeduping, memories.count > 1 else { return }
         let snapshot = memories
-        let pairs = Consolidator.candidatePairs(snapshot,
-            cosine: { i, j in self.embeddings.cosine(snapshot[i].id, snapshot[j].id) },
-            cosineThreshold: Config.dedupeCosine)
+        let cosine: (Int, Int) -> Double? = { i, j in self.embeddings.cosine(snapshot[i].id, snapshot[j].id) }
+        let pairs = Config.contradictionDetectionEnabled
+            ? Consolidator.maintenancePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine)
+            : Consolidator.candidatePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine)
         guard !pairs.isEmpty else { return }
 
         isDeduping = true
@@ -657,16 +663,14 @@ final class AppState: ObservableObject {
         let model = Config.gateModel
         Task {
             do {
-                let out = try await Consolidator.dedupe(memories: snapshot, pairs: pairs, model: model)
+                let out = try await Consolidator.maintain(memories: snapshot, pairs: pairs, model: model)
                 await MainActor.run {
                     self.memories = out.memories
                     Store.saveMemories(self.memories)
                     self.embeddings.sync(self.memories)
                     self.isDeduping = false
                     self.clearAssistantHealth()
-                    if out.updated > 0 {
-                        self.statusText = "Merged \(out.updated) duplicate memor\(out.updated == 1 ? "y" : "ies")"
-                    }
+                    if out.updated > 0 { self.statusText = "Tidied memory (\(out.updated) merged/updated)" }
                 }
             } catch {
                 await MainActor.run {
@@ -675,6 +679,15 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Bring an archived memory back (undo a supersession).
+    func restoreMemory(_ id: UUID) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        memories[i].superseded = false
+        memories[i].supersededBy = nil
+        Store.saveMemories(memories)
+        embeddings.sync(memories)
     }
 
     // MARK: - Reinforcement decay (plan 02)

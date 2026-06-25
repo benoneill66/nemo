@@ -331,10 +331,12 @@ private struct SurfacedCard: View {
 struct MemoryPane: View {
     @EnvironmentObject var state: AppState
     @State private var filter: Category? = nil
+    @State private var showArchived = false
     @State private var selected: Memory?
 
     private var shown: [Memory] {
-        let base = filter.map { state.memories(in: $0) } ?? state.memories
+        if showArchived { return state.archivedMemories.sorted { $0.updated > $1.updated } }
+        let base = filter.map { state.memories(in: $0) } ?? state.liveMemories
         return base.sorted { $0.effectiveImportance != $1.effectiveImportance
             ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
     }
@@ -347,14 +349,19 @@ struct MemoryPane: View {
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        CategoryChip(label: "All", symbol: "circle.grid.2x2", count: state.memories.count,
-                                     selected: filter == nil) { filter = nil }
+                        CategoryChip(label: "All", symbol: "circle.grid.2x2", count: state.liveMemories.count,
+                                     selected: filter == nil && !showArchived) { filter = nil; showArchived = false }
                         ForEach(Category.allCases, id: \.self) { cat in
                             let n = state.memories(in: cat).count
                             if n > 0 {
                                 CategoryChip(label: cat.rawValue, symbol: cat.symbol, count: n,
-                                             hue: cat.hue, selected: filter == cat) { filter = cat }
+                                             hue: cat.hue, selected: filter == cat && !showArchived) { filter = cat; showArchived = false }
                             }
+                        }
+                        let archived = state.archivedMemories.count
+                        if archived > 0 {
+                            CategoryChip(label: "Archived", symbol: "archivebox", count: archived,
+                                         selected: showArchived) { showArchived = true; filter = nil }
                         }
                     }
                 }
@@ -498,6 +505,30 @@ private struct MemoryDetail: View {
                 }
 
                 sourceSection
+
+                if mem.superseded {
+                    HStack(spacing: 8) {
+                        Image(systemName: "archivebox.fill").foregroundStyle(.orange)
+                        Text("Archived — superseded by a newer memory")
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                        Spacer()
+                        Button("Restore") { state.restoreMemory(mem.id) }.controlSize(.small)
+                    }
+                    .padding(10).background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.16)))
+                }
+
+                if !mem.history.isEmpty {
+                    label("History")
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(mem.history.enumerated()), id: \.offset) { _, note in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "clock.arrow.circlepath").font(.system(size: 9))
+                                    .foregroundStyle(.white.opacity(0.4))
+                                Text(note).font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                            }
+                        }
+                    }
+                }
 
                 footer
                 Spacer()
