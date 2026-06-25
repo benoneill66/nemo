@@ -30,6 +30,7 @@ final class AppState: ObservableObject {
     private let engine: SpeechEngine = makeSpeechEngine()
     private let speaker = Speaker()
     private let diarizer = SpeakerDiarizer(threshold: Float(Config.speakerThreshold))
+    private let embeddings = EmbeddingIndex()   // on-device semantic index (plans 01, 11)
 
     /// Which transcription backend is active (shown in the UI).
     var engineName: String { engine.displayName }
@@ -51,6 +52,8 @@ final class AppState: ObservableObject {
         diarizer.seed(speakers.map { (id: $0.id, centroid: $0.centroid, count: $0.count) })
         refreshImportSources()   // walks ~/.claude off the main thread
         maybeAutoBrief()         // generate today's briefing if we haven't already
+        // Build the semantic index after init returns, so it doesn't block launch.
+        Task { @MainActor in self.embeddings.sync(self.memories) }
 
         engine.onStatus = { [weak self] s in self?.handleStatus(s) }
         engine.onPartial = { [weak self] t in self?.partialText = t }
@@ -315,6 +318,7 @@ final class AppState: ObservableObject {
                 await MainActor.run {
                     self.memories = out.memories
                     Store.saveMemories(self.memories)
+                    self.embeddings.sync(self.memories)
                     self.segments.removeAll { junkIds.contains($0.id) }
                     for i in self.segments.indices where ids.contains(self.segments[i].id) {
                         self.segments[i].consolidated = true
@@ -377,8 +381,17 @@ final class AppState: ObservableObject {
             .map(\.text)
             .joined(separator: " ") + " " + partialText
 
-        let hits = Surfacer.rank(recent: recentText, memories: memories,
+        let hits: [Surfacer.Hit]
+        if Config.semanticSurfaceEnabled, embeddings.isAvailable {
+            let neighbours = embeddings.search(recentText, limit: 20)
+            let semantic = Dictionary(neighbours.map { ($0.id, $0.score) }, uniquingKeysWith: { a, _ in a })
+            hits = Surfacer.rankHybrid(recent: recentText, memories: memories, semantic: semantic,
+                                       semanticWeight: Config.semanticWeight, semanticFloor: Config.semanticFloor,
+                                       minScore: Config.surfaceMinScore, limit: Config.surfaceMax)
+        } else {
+            hits = Surfacer.rank(recent: recentText, memories: memories,
                                  minScore: Config.surfaceMinScore, limit: Config.surfaceMax)
+        }
         let hitIds = Set(hits.map { $0.memory.id })
 
         var merged: [SurfacedMemory] = []
@@ -483,6 +496,7 @@ final class AppState: ObservableObject {
                 await MainActor.run {
                     self.memories = out.memories
                     Store.saveMemories(self.memories)
+                    self.embeddings.sync(self.memories)
                     self.isImporting = false
                     self.statusText = "Imported \(label): +\(out.created) new, \(out.updated) updated"
                 }
@@ -529,6 +543,7 @@ final class AppState: ObservableObject {
     func deleteMemory(_ id: UUID) {
         memories.removeAll { $0.id == id }
         for i in memories.indices { memories[i].links.removeAll { $0 == id } }
+        embeddings.remove(id)
         Store.saveMemories(memories)
     }
 

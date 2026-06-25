@@ -25,6 +25,8 @@ enum Store {
     private static var sessionsURL: URL { dir.appendingPathComponent("sessions.json") }
     private static var briefingURL: URL { dir.appendingPathComponent("briefing.json") }
     private static var speakersURL: URL { dir.appendingPathComponent("speakers.json") }
+    private static var embeddingsURL: URL { dir.appendingPathComponent("embeddings.json") }
+    private static var usageURL: URL { dir.appendingPathComponent("usage.json") }
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -63,4 +65,12 @@ enum Store {
     static func saveSessions(_ v: [Session]) { save(v, to: sessionsURL) }
     static func saveBriefing(_ v: Briefing) { save(v, to: briefingURL) }
     static func saveSpeakers(_ v: [SpeakerIdentity]) { save(v, to: speakersURL) }
+
+    // Semantic embedding cache (plan 01) — safe to delete; rebuilds on next sync.
+    static func loadEmbeddingCache() -> EmbeddingCache? { load(embeddingsURL, EmbeddingCache.self) }
+    static func saveEmbeddingCache(_ v: EmbeddingCache) { save(v, to: embeddingsURL) }
+
+    // LLM usage log (plan 09) — metadata only, never prompt/response text.
+    static func loadUsage() -> [UsageEvent] { load(usageURL, [UsageEvent].self) ?? [] }
+    static func saveUsage(_ v: [UsageEvent]) { save(v, to: usageURL) }
 }
