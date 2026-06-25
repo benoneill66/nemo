@@ -60,6 +60,7 @@ final class AppState: ObservableObject {
             Task { @MainActor in self?.recordUsage(event) }
         }
         refreshImportSources()   // walks ~/.claude off the main thread
+        maybeDecay()             // relax stale reinforcement weights, once per day
         maybeAutoBrief()         // generate today's briefing if we haven't already
         // Build the semantic index after init returns, so it doesn't block launch.
         Task { @MainActor in self.embeddings.sync(self.memories) }
@@ -82,7 +83,8 @@ final class AppState: ObservableObject {
 
     func memories(in category: Category) -> [Memory] {
         memories.filter { $0.categoryEnum == category }
-            .sorted { $0.importance != $1.importance ? $0.importance > $1.importance : $0.updated > $1.updated }
+            .sorted { $0.effectiveImportance != $1.effectiveImportance
+                ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
     }
     func memory(_ id: UUID) -> Memory? { memories.first { $0.id == id } }
     func segments(in session: Session) -> [TranscriptSegment] {
@@ -412,6 +414,23 @@ final class AppState: ObservableObject {
         }
         let hitIds = Set(hits.map { $0.memory.id })
 
+        // Reinforcement (plan 02): a memory that *freshly* surfaces (wasn't already showing) gets
+        // a small, capped weight bump. Same-topic talk keeps cards in `surfaced`, so this only
+        // fires on genuine topic shifts — writes are bounded by those, not by the tick rate.
+        if Config.reinforcementEnabled {
+            let prevIds = Set(surfaced.map(\.id))
+            var bumped = false
+            for h in hits where !prevIds.contains(h.memory.id) {
+                if let i = memories.firstIndex(where: { $0.id == h.memory.id }) {
+                    memories[i].hitCount += 1
+                    memories[i].lastSurfaced = now
+                    memories[i].weight = Reinforcement.reinforced(memories[i].weight)
+                    bumped = true
+                }
+            }
+            if bumped { Store.saveMemories(memories) }
+        }
+
         var merged: [SurfacedMemory] = []
         // Carry forward still-fresh cards that didn't re-match this round (let them decay).
         for s in surfaced where !hitIds.contains(s.id)
@@ -611,6 +630,31 @@ final class AppState: ObservableObject {
     func usageRollup(days: Int = 7) -> UsageRollup {
         let since = Calendar.current.startOfDay(for: Date().addingTimeInterval(-Double(days - 1) * 86_400))
         return usage.rollup(since: since)
+    }
+
+    // MARK: - Reinforcement decay (plan 02)
+
+    private static let lastDecayKey = "nemo.lastDecay"
+
+    /// Once per day, decay learned weights toward base importance. Pinned memories are exempt.
+    private func maybeDecay() {
+        guard Config.reinforcementEnabled else { return }
+        let last = UserDefaults.standard.object(forKey: Self.lastDecayKey) as? Date
+        if let last, Calendar.current.isDateInToday(last) { return }
+        decayWeights()
+        UserDefaults.standard.set(Date(), forKey: Self.lastDecayKey)
+    }
+
+    private func decayWeights() {
+        let now = Date()
+        let halfLife = Config.decayHalfLifeDays
+        var changed = false
+        for i in memories.indices where !memories[i].pinned && memories[i].weight > 0 {
+            let ref = memories[i].lastSurfaced ?? memories[i].updated
+            let decayed = Reinforcement.decayed(memories[i].weight, lastRef: ref, now: now, halfLifeDays: halfLife)
+            if decayed != memories[i].weight { memories[i].weight = decayed; changed = true }
+        }
+        if changed { Store.saveMemories(memories) }
     }
 
     // MARK: - Editing

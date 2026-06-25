@@ -335,7 +335,8 @@ struct MemoryPane: View {
 
     private var shown: [Memory] {
         let base = filter.map { state.memories(in: $0) } ?? state.memories
-        return base.sorted { $0.importance != $1.importance ? $0.importance > $1.importance : $0.updated > $1.updated }
+        return base.sorted { $0.effectiveImportance != $1.effectiveImportance
+            ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
     }
     private let cols = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)]
 

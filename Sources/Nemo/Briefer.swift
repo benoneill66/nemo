@@ -36,8 +36,8 @@ enum Briefer {
 
         func list(_ cat: Category, max: Int) -> [Memory] {
             memories.filter { $0.categoryEnum == cat }
-                .sorted { $0.importance != $1.importance ? $0.importance > $1.importance
-                                                         : $0.updated > $1.updated }
+                .sorted { $0.effectiveImportance != $1.effectiveImportance
+                    ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
                 .prefix(max).map { $0 }
         }
         func render(_ mems: [Memory]) -> String {
