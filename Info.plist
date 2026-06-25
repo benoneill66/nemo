@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Nemo</string>
+    <key>CFBundleDisplayName</key>
+    <string>Nemo</string>
+    <key>CFBundleExecutable</key>
+    <string>Nemo</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.nemo.Nemo</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Nemo</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Nemo listens continuously so it can transcribe everything it hears and build your memory.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Nemo transcribes your speech on-device to capture and organize what you say.</string>
+</dict>
+</plist>

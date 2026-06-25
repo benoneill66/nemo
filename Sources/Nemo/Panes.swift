@@ -1,0 +1,421 @@
+import SwiftUI
+
+// MARK: - Shared header
+
+private struct PaneHeader: View {
+    let title: String
+    let subtitle: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 24, weight: .bold))
+            Text(subtitle).font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private let timeFmt: DateFormatter = {
+    let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .medium; return f
+}()
+
+// MARK: - Live transcription
+
+struct LivePane: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                PaneHeader(title: "Live", subtitle: "Everything Nemo is hearing, transcribed on-device.")
+                GlassButton(title: "Consolidate Now", systemImage: "wand.and.stars") { state.consolidateNow() }
+                    .frame(width: 190)
+            }
+
+            // What's being heard right now.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform").foregroundStyle(.green)
+                    Text(state.listening ? "Hearing now" : "Not listening")
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.75))
+                }
+                Text(state.partialText.isEmpty ? "…" : state.partialText)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white.opacity(state.partialText.isEmpty ? 0.3 : 0.95))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(16)
+            .glassCard(tintHue: 0.4)
+
+            if let answer = state.lastAnswer {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "bubble.left.and.text.bubble.right.fill").foregroundStyle(.cyan)
+                    Text(answer).font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
+                }
+                .padding(12).glassCard(cornerRadius: 14, tintHue: 0.55)
+            }
+
+            // Recent transcript.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.segments.reversed()) { seg in
+                        SegmentRow(seg: seg) { state.toggleMark(seg.id) }
+                    }
+                    if state.segments.isEmpty {
+                        Text("Press Start Listening — transcribed speech will stream in here.")
+                            .font(.system(size: 13)).foregroundStyle(.white.opacity(0.5))
+                            .padding(.top, 40)
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .padding(20)
+        .glassCard(cornerRadius: 22)
+    }
+}
+
+private struct SegmentRow: View {
+    let seg: TranscriptSegment
+    let toggle: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(timeFmt.string(from: seg.start))
+                .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
+                .frame(width: 78, alignment: .leading)
+            Text(seg.text)
+                .font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: toggle) {
+                Image(systemName: seg.marked ? "star.fill" : "star")
+                    .foregroundStyle(seg.marked ? .yellow : .white.opacity(0.35))
+            }.buttonStyle(.plain)
+        }
+        .padding(.vertical, 7).padding(.horizontal, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(seg.marked ? Color.yellow.opacity(0.1) : Color.white.opacity(0.04)))
+    }
+}
+
+// MARK: - Memory
+
+struct MemoryPane: View {
+    @EnvironmentObject var state: AppState
+    @State private var filter: Category? = nil
+    @State private var selected: Memory?
+
+    private var shown: [Memory] {
+        let base = filter.map { state.memories(in: $0) } ?? state.memories
+        return base.sorted { $0.importance != $1.importance ? $0.importance > $1.importance : $0.updated > $1.updated }
+    }
+    private let cols = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)]
+
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                PaneHeader(title: "Memory", subtitle: "A rich, interconnected map of what Nemo knows about you.")
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        CategoryChip(label: "All", symbol: "circle.grid.2x2", count: state.memories.count,
+                                     selected: filter == nil) { filter = nil }
+                        ForEach(Category.allCases, id: \.self) { cat in
+                            let n = state.memories(in: cat).count
+                            if n > 0 {
+                                CategoryChip(label: cat.rawValue, symbol: cat.symbol, count: n,
+                                             hue: cat.hue, selected: filter == cat) { filter = cat }
+                            }
+                        }
+                    }
+                }
+
+                if state.memories.isEmpty {
+                    emptyState
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: cols, alignment: .leading, spacing: 12) {
+                            ForEach(shown) { mem in
+                                MemoryCard(mem: mem, selected: selected?.id == mem.id) { selected = mem }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(20)
+            .glassCard(cornerRadius: 22)
+
+            if let sel = selected, let live = state.memory(sel.id) {
+                MemoryDetail(mem: live) { selected = nil }
+                    .frame(width: 320)
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "brain.head.profile").font(.system(size: 40)).foregroundStyle(.white.opacity(0.4))
+            Text("No memories yet").font(.system(size: 15, weight: .semibold))
+            Text("Start listening and Nemo will distill what it hears, or import what another assistant already knows from the Import tab.")
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55))
+                .multilineTextAlignment(.center).frame(maxWidth: 360)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct CategoryChip: View {
+    let label: String
+    let symbol: String
+    let count: Int
+    var hue: Double? = nil
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol).font(.system(size: 10))
+                Text(label).font(.system(size: 12, weight: .medium))
+                Text("\(count)").font(.system(size: 10, weight: .bold)).opacity(0.6)
+            }
+            .padding(.horizontal, 11).padding(.vertical, 6)
+            .background(Capsule().fill(selected ? Color(hue: hue ?? 0.6, saturation: 0.7, brightness: 1).opacity(0.3) : Color.white.opacity(0.08)))
+            .overlay(Capsule().strokeBorder(.white.opacity(selected ? 0.4 : 0.12), lineWidth: 0.5))
+            .foregroundStyle(.white.opacity(selected ? 1 : 0.75))
+        }.buttonStyle(.plain)
+    }
+}
+
+private struct MemoryCard: View {
+    let mem: Memory
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: mem.categoryEnum.symbol).font(.system(size: 11))
+                        .foregroundStyle(Color(hue: mem.categoryEnum.hue, saturation: 0.6, brightness: 1))
+                    Text(mem.category).font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                    Spacer()
+                    ImportanceDots(level: mem.importance)
+                }
+                Text(mem.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                Text(mem.content).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                if !mem.entities.isEmpty || !mem.links.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(mem.entities.prefix(2), id: \.self) { GlassPill(text: $0, hue: mem.categoryEnum.hue) }
+                        if mem.links.count > 0 { GlassPill(text: "\(mem.links.count)", systemImage: "link") }
+                    }
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassCard(cornerRadius: 16, tintHue: mem.categoryEnum.hue)
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(selected ? 0.6 : 0), lineWidth: 1.5))
+        }.buttonStyle(.plain)
+    }
+}
+
+private struct ImportanceDots: View {
+    let level: Int
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<5, id: \.self) { i in
+                Circle().fill(i < level ? Color.yellow.opacity(0.9) : Color.white.opacity(0.18))
+                    .frame(width: 5, height: 5)
+            }
+        }
+    }
+}
+
+private struct MemoryDetail: View {
+    @EnvironmentObject var state: AppState
+    let mem: Memory
+    let close: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    GlassPill(text: mem.category, systemImage: mem.categoryEnum.symbol, hue: mem.categoryEnum.hue)
+                    Spacer()
+                    Button(action: close) { Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5)) }
+                        .buttonStyle(.plain)
+                }
+                Text(mem.title).font(.system(size: 18, weight: .bold))
+                Text(mem.content).font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !mem.entities.isEmpty {
+                    label("Entities")
+                    FlowPills(items: mem.entities, hue: mem.categoryEnum.hue)
+                }
+
+                let related = mem.links.compactMap { state.memory($0) }
+                if !related.isEmpty {
+                    label("Connected to")
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(related) { r in
+                            HStack(spacing: 6) {
+                                Image(systemName: r.categoryEnum.symbol).font(.system(size: 10))
+                                    .foregroundStyle(Color(hue: r.categoryEnum.hue, saturation: 0.6, brightness: 1))
+                                Text(r.title).font(.system(size: 12)).foregroundStyle(.white.opacity(0.85))
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    GlassPill(text: mem.source, systemImage: "antenna.radiowaves.left.and.right")
+                    Spacer()
+                    Button(action: { state.deleteMemory(mem.id); close() }) {
+                        Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
+                    }.buttonStyle(.plain)
+                }
+                .padding(.top, 4)
+                Spacer()
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .glassCard(cornerRadius: 22, tintHue: mem.categoryEnum.hue, strong: true)
+    }
+
+    private func label(_ t: String) -> some View {
+        Text(t.uppercased()).font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45)).padding(.top, 4)
+    }
+}
+
+/// Simple wrapping row of pills.
+struct FlowPills: View {
+    let items: [String]
+    var hue: Double? = nil
+    var body: some View {
+        let rows = items.chunked(4)
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 6) { ForEach(row, id: \.self) { GlassPill(text: $0, hue: hue) } }
+            }
+        }
+    }
+}
+
+extension Array {
+    func chunked(_ size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
+    }
+}
+
+// MARK: - Sessions
+
+struct SessionsPane: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PaneHeader(title: "Sessions", subtitle: "Meetings and daily ambient capture, neatly organized.")
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(state.sessions.sorted { $0.start > $1.start }) { s in
+                        SessionCard(session: s, count: state.segments(in: s).count)
+                    }
+                    if state.sessions.isEmpty {
+                        Text("Start listening to begin a daily session, or start a meeting to capture one.")
+                            .font(.system(size: 13)).foregroundStyle(.white.opacity(0.5)).padding(.top, 40)
+                    }
+                }
+            }
+        }
+        .padding(20).glassCard(cornerRadius: 22)
+    }
+}
+
+private struct SessionCard: View {
+    @EnvironmentObject var state: AppState
+    let session: Session
+    let count: Int
+    @State private var expanded = false
+
+    private var range: String {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
+        let start = f.string(from: session.start)
+        if let end = session.end { let t = DateFormatter(); t.timeStyle = .short; return "\(start) – \(t.string(from: end))" }
+        return "\(start) · ongoing"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: session.kind == .meeting ? "person.3.fill" : "sun.max.fill")
+                    .foregroundStyle(session.kind == .meeting ? .orange : .yellow)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.title).font(.system(size: 15, weight: .semibold))
+                    Text(range).font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                }
+                Spacer()
+                if session.isOpen { GlassPill(text: "live", systemImage: "dot.radiowaves.left.and.right", hue: 0.33) }
+                GlassPill(text: "\(count)", systemImage: "text.alignleft")
+                Button { withAnimation { expanded.toggle() } } label: {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").foregroundStyle(.white.opacity(0.5))
+                }.buttonStyle(.plain)
+            }
+            if let summary = session.summary {
+                Text(summary).font(.system(size: 12)).foregroundStyle(.white.opacity(0.78))
+            }
+            if expanded {
+                Divider().overlay(.white.opacity(0.1))
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(state.segments(in: session).suffix(40)) { seg in
+                        HStack(alignment: .top, spacing: 8) {
+                            if seg.marked { Image(systemName: "star.fill").font(.system(size: 8)).foregroundStyle(.yellow) }
+                            Text(seg.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .glassCard(cornerRadius: 16, tintHue: session.kind == .meeting ? 0.08 : 0.14)
+    }
+}
+
+// MARK: - Import
+
+struct ImportPane: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                PaneHeader(title: "Import Context", subtitle: "Seed memory with what other AI assistants already know about you.")
+                GlassButton(title: "Rescan", systemImage: "arrow.clockwise") { state.refreshImportSources() }
+                    .frame(width: 130)
+            }
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(state.importSources) { src in
+                        HStack(spacing: 12) {
+                            Image(systemName: src.assistant == "claude" ? "sparkle" : "doc.text")
+                                .font(.system(size: 20)).foregroundStyle(.purple)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(src.label).font(.system(size: 14, weight: .semibold))
+                                Text("\(src.fileCount) file\(src.fileCount == 1 ? "" : "s") · \(src.path)")
+                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                            Spacer()
+                            GlassButton(title: "Import", systemImage: "square.and.arrow.down") {
+                                state.importContext(src)
+                            }.frame(width: 120).disabled(state.isImporting)
+                        }
+                        .padding(14).glassCard(cornerRadius: 16, tintHue: 0.8)
+                    }
+                    if state.importSources.isEmpty {
+                        Text("No assistant memories found. Add paths via \"importPaths\" in ~/.config/nemo/config.json, then Rescan.")
+                            .font(.system(size: 13)).foregroundStyle(.white.opacity(0.5)).padding(.top, 40)
+                    }
+                }
+            }
+        }
+        .padding(20).glassCard(cornerRadius: 22)
+    }
+}

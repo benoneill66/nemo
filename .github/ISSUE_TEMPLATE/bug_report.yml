@@ -1,0 +1,48 @@
+name: Bug report
+description: Something isn't working the way you expect
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug! Please fill out the details below.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+      placeholder: When I say "end meeting", the session doesn't close…
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start listening
+        2. Say "…"
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "e.g. 26.0 (Tahoe) / 14.5 (Sonoma)"
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Transcription engine (shown in the sidebar)
+      options:
+        - Enhanced dictation (SpeechAnalyzer)
+        - Legacy (SFSpeechRecognizer)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / console output
+      description: Anything from Console.app or the terminal, if relevant.
+      render: shell
