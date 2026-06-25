@@ -9,6 +9,10 @@ let package = Package(
             name: "Nemo",
             path: "Sources/Nemo"
         ),
+        .executableTarget(
+            name: "NemoMCP",
+            path: "Sources/NemoMCP"
+        ),
         .testTarget(
             name: "NemoTests",
             dependencies: ["Nemo"],
