@@ -48,6 +48,13 @@ and Apple's Speech framework for transcription, so raw audio never leaves your M
   decisions, and what your last sessions were about. It shows as a card on the Live tab (tap
   to hear it read aloud) and a **Morning Briefing** action in the menu bar. Generated once per
   day and cached, so reopening is instant.
+- **Tells speakers apart** — distinguishes distinct voices in the transcript with on-device
+  acoustic fingerprints (mel-frequency cepstral coefficients + pitch), clustered into
+  **Speaker 1/2/…** with no setup and no idea up front how many people are talking. Tap a
+  speaker to give them a real name; the name flows through the transcript, the session view,
+  and how Claude attributes facts and decisions during consolidation. Voices persist across
+  launches, so a returning speaker keeps their identity. Like everything else, it's local —
+  only acoustic features are derived, never stored or sent.
 - **Captures meetings** — start a session by voice ("start meeting") or a button; everything
   said is grouped, and when it ends Claude writes a summary and folds it into memory.
 - **Mark by keyword** — say "important", "remember this", "action item", "note to self", etc.
@@ -140,6 +147,8 @@ No API keys required — memory is built with your Claude CLI login. Config live
   "memoryModel": "claude-sonnet-4-6",
   "gateModel": "claude-haiku-4-5",
   "relevanceGate": true,
+  "diarization": true,
+  "speakerThreshold": 1.5,
   "transcriptRetentionDays": 7,
   "markers": ["important", "remember this", "action item", "note to self", "follow up"],
   "meetingStart": ["start meeting", "begin meeting"],
@@ -161,6 +170,10 @@ No API keys required — memory is built with your Claude CLI login. Config live
 - `memoryModel` — Claude model used for consolidation & import.
 - `gateModel` — cheap/fast model for the pre-consolidation relevance gate (defaults to Haiku).
 - `relevanceGate` — set `false` to consolidate every segment (skip the gate entirely).
+- `diarization` — set `false` to turn off speaker identification (no voice fingerprinting).
+- `speakerThreshold` — how readily two voices count as the same person. Higher merges speakers
+  together; lower splits more eagerly. `~1.5` is a sensible middle — nudge down if one person is
+  split into several, up if several people collapse into one.
 - `transcriptRetentionDays` — days to keep consolidated raw segments before pruning (`0` keeps
   them forever). Marked moments and meeting transcripts are never auto-pruned.
 - `markers` — spoken phrases that flag a moment as important.
@@ -197,8 +210,9 @@ Delete a file to reset that part; the app rebuilds from there.
 | `Sources/Nemo/DictationEngine.swift` | macOS 26 `SpeechAnalyzer` enhanced dictation |
 | `Sources/Nemo/TranscriptionEngine.swift` | `SFSpeechRecognizer` fallback transcription |
 | `Sources/Nemo/Consolidator.swift` | Distills transcript → categorized, linked memory |
+| `Sources/Nemo/SpeakerDiarizer.swift` | On-device voice fingerprinting + speaker clustering |
 | `Sources/Nemo/ContextImporter.swift` | Seeds memory from other assistants' files |
-| `Sources/Nemo/Models.swift` | Segment / Memory / Session / Category models |
+| `Sources/Nemo/Models.swift` | Segment / Memory / Session / Speaker / Category models |
 | `Sources/Nemo/Store.swift` | JSON persistence |
 | `Sources/Nemo/Config.swift` | Typed view over `config.json` |
 | `Sources/Nemo/Speaker.swift` | Text-to-speech for spoken answers |

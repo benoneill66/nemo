@@ -71,6 +71,27 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     var markers: [String] = []         // which keyword(s) triggered the flag
     var sessionId: UUID? = nil         // owning session (meeting / ambient day)
     var consolidated: Bool = false     // already folded into memory
+    var speaker: Int? = nil            // diarization cluster id (0-based); nil = unattributed
+}
+
+// MARK: - Speaker
+
+/// A distinct voice the diarizer has picked out, with the centroid of its voice fingerprints so
+/// the same person re-matches across sessions and app launches. Starts life as "Speaker N" and
+/// can be renamed by the user. Entirely on-device — the centroid is acoustic features, not audio.
+struct SpeakerIdentity: Codable, Identifiable, Hashable {
+    var id: Int                        // matches TranscriptSegment.speaker
+    var name: String
+    var centroid: [Float] = []         // running mean of this voice's fingerprints
+    var count: Int = 0                 // fingerprints folded in (confidence in the centroid)
+    var renamed: Bool = false          // user gave it a real name (vs. the default "Speaker N")
+    var firstSeen: Date = Date()
+
+    /// A stable, pleasant hue per speaker for chips/labels in the UI.
+    var hue: Double {
+        let golden = 0.61803398875
+        return (0.07 + Double(id) * golden).truncatingRemainder(dividingBy: 1)
+    }
 }
 
 // MARK: - Memory

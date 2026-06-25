@@ -12,10 +12,14 @@ import Speech
 final class TranscriptionEngine: NSObject, SpeechEngine {
     /// Live, not-yet-committed text for the current window (drives the UI's "hearing now").
     var onPartial: ((String) -> Void)?
-    /// A finalized chunk of speech with timing.
-    var onSegment: ((_ text: String, _ start: Date, _ end: Date) -> Void)?
+    /// A finalized chunk of speech with timing and (optionally) a voice fingerprint.
+    var onSegment: ((_ text: String, _ start: Date, _ end: Date, _ voice: VoiceFingerprint?) -> Void)?
     var onStatus: ((SpeechEngineStatus) -> Void)?
     let displayName = "Standard recognition"
+
+    // Voice fingerprinting for speaker diarization (nil when disabled in config).
+    private let profiler: VoiceProfiler? = Config.diarizationEnabled ? VoiceProfiler() : nil
+    private let analyzer: VoiceAnalyzer? = Config.diarizationEnabled ? VoiceAnalyzer() : nil
 
     private let audioEngine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -102,8 +106,10 @@ final class TranscriptionEngine: NSObject, SpeechEngine {
         if !audioEngine.isRunning {
             let input = audioEngine.inputNode
             let format = input.outputFormat(forBus: 0)
+            let profiler = self.profiler
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                 self?.request?.append(buffer)
+                profiler?.append(buffer)
             }
             tapInstalled = true
             audioEngine.prepare()
@@ -154,8 +160,16 @@ final class TranscriptionEngine: NSObject, SpeechEngine {
         let text = lastCommitted.trimmingCharacters(in: .whitespacesAndNewlines)
         lastCommitted = ""
         onPartial?("")
-        guard !text.isEmpty else { return }
-        onSegment?(text, windowStart, Date())
+        guard !text.isEmpty else { profiler?.reset(); return }
+        let voice = fingerprintForCommit()
+        onSegment?(text, windowStart, Date(), voice)
+    }
+
+    /// Distill the audio accumulated for this window into a voice fingerprint (and clear it).
+    private func fingerprintForCommit() -> VoiceFingerprint? {
+        guard let profiler, let analyzer else { return nil }
+        let (samples, rate) = profiler.drain()
+        return analyzer.fingerprint(samples: samples, rate: rate)
     }
 
     /// If the speaker pauses mid-window, commit early so segments track natural breaks.
@@ -189,6 +203,7 @@ final class TranscriptionEngine: NSObject, SpeechEngine {
 
     private func teardown() {
         teardownTask()
+        profiler?.reset()
         if audioEngine.isRunning { audioEngine.stop() }
         if tapInstalled {
             audioEngine.inputNode.removeTap(onBus: 0)

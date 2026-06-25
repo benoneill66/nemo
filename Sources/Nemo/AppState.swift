@@ -11,6 +11,7 @@ final class AppState: ObservableObject {
     @Published private(set) var segments: [TranscriptSegment] = []
     @Published private(set) var memories: [Memory] = []
     @Published private(set) var sessions: [Session] = []
+    @Published private(set) var speakers: [SpeakerIdentity] = []
 
     // Live UI state
     @Published private(set) var listening = false
@@ -28,6 +29,7 @@ final class AppState: ObservableObject {
 
     private let engine: SpeechEngine = makeSpeechEngine()
     private let speaker = Speaker()
+    private let diarizer = SpeakerDiarizer(threshold: Float(Config.speakerThreshold))
 
     /// Which transcription backend is active (shown in the UI).
     var engineName: String { engine.displayName }
@@ -43,14 +45,17 @@ final class AppState: ObservableObject {
         segments = Store.loadSegments()
         memories = Store.loadMemories()
         sessions = Store.loadSessions()
+        speakers = Store.loadSpeakers()
         briefing = Store.loadBriefing()
+        // Restore learned voices so returning speakers keep their identity (and name).
+        diarizer.seed(speakers.map { (id: $0.id, centroid: $0.centroid, count: $0.count) })
         refreshImportSources()   // walks ~/.claude off the main thread
         maybeAutoBrief()         // generate today's briefing if we haven't already
 
         engine.onStatus = { [weak self] s in self?.handleStatus(s) }
         engine.onPartial = { [weak self] t in self?.partialText = t }
-        engine.onSegment = { [weak self] text, start, end in
-            self?.ingest(text: text, start: start, end: end)
+        engine.onSegment = { [weak self] text, start, end, voice in
+            self?.ingest(text: text, start: start, end: end, voice: voice)
         }
     }
 
@@ -107,8 +112,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Ingest a finalized transcript segment
 
-    private func ingest(text: String, start: Date, end: Date) {
+    private func ingest(text: String, start: Date, end: Date, voice: VoiceFingerprint? = nil) {
         var seg = TranscriptSegment(text: text, start: start, end: end)
+
+        // 0. Attribute the segment to a speaker by clustering its voice fingerprint.
+        if let voice { seg.speaker = attributeSpeaker(voice) }
 
         // 1. Keyword marking.
         let lower = text.lowercased()
@@ -152,6 +160,55 @@ final class AppState: ObservableObject {
         guard let r = best else { return nil }
         let q = String(original[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
         return q.count >= 3 ? q : nil
+    }
+
+    // MARK: - Speakers
+
+    /// Cluster a voice fingerprint into a speaker id, materializing (or refreshing) its persisted
+    /// identity. New voices get a default "Speaker N" name the user can change later.
+    private func attributeSpeaker(_ voice: VoiceFingerprint) -> Int {
+        let id = diarizer.assign(voice)
+        let profile = diarizer.profiles.first { $0.id == id }
+        if let idx = speakers.firstIndex(where: { $0.id == id }) {
+            // Keep the learned centroid in sync so a returning voice keeps matching.
+            if let profile {
+                speakers[idx].centroid = profile.centroid
+                speakers[idx].count = profile.count
+            }
+        } else {
+            speakers.append(SpeakerIdentity(id: id, name: "Speaker \(id + 1)",
+                                            centroid: profile?.centroid ?? voice.features,
+                                            count: profile?.count ?? 1))
+        }
+        Store.saveSpeakers(speakers)
+        return id
+    }
+
+    func speaker(_ id: Int?) -> SpeakerIdentity? {
+        guard let id else { return nil }
+        return speakers.first { $0.id == id }
+    }
+    func speakerName(_ id: Int?) -> String? { speaker(id)?.name }
+
+    /// Give a speaker a real name. Empty input reverts it to the default "Speaker N".
+    func renameSpeaker(_ id: Int, to name: String) {
+        guard let idx = speakers.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            speakers[idx].name = "Speaker \(id + 1)"
+            speakers[idx].renamed = false
+        } else {
+            speakers[idx].name = trimmed
+            speakers[idx].renamed = true
+        }
+        Store.saveSpeakers(speakers)
+    }
+
+    /// Speakers that have actually appeared in the retained transcript, most-recent first —
+    /// what the UI offers for at-a-glance review and renaming.
+    var activeSpeakers: [SpeakerIdentity] {
+        let present = Set(segments.compactMap(\.speaker))
+        return speakers.filter { present.contains($0.id) }.sorted { $0.id < $1.id }
     }
 
     // MARK: - Sessions
@@ -224,6 +281,7 @@ final class AppState: ObservableObject {
         let useGate = Config.relevanceGateEnabled && sessionId == nil
         let gateModel = Config.gateModel
         let ids = Set(pending.map { $0.id })
+        let speakerNames = Dictionary(speakers.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
 
         Task {
             do {
@@ -252,7 +310,8 @@ final class AppState: ObservableObject {
 
                 // 3. Distill the relevant segments into memory with the full model.
                 let out = try await Consolidator.consolidate(segments: relevant, existing: snapshot,
-                                                            model: model, sessionTitle: sessionTitle)
+                                                            model: model, sessionTitle: sessionTitle,
+                                                            speakerNames: speakerNames)
                 await MainActor.run {
                     self.memories = out.memories
                     Store.saveMemories(self.memories)

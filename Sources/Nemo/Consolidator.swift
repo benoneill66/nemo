@@ -59,9 +59,11 @@ enum Consolidator {
                             existing: [Memory],
                             model: String?,
                             sessionTitle: String?,
-                            importedFrom: String? = nil) async throws -> Output {
+                            importedFrom: String? = nil,
+                            speakerNames: [Int: String] = [:]) async throws -> Output {
         let prompt = buildPrompt(segments: segments, existing: existing,
-                                 sessionTitle: sessionTitle, importedFrom: importedFrom)
+                                 sessionTitle: sessionTitle, importedFrom: importedFrom,
+                                 speakerNames: speakerNames)
         let sys = importedFrom == nil ? system : importSystem
         let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys, model: model)
         let payload = try parse(raw)
@@ -158,11 +160,13 @@ enum Consolidator {
     private static func buildPrompt(segments: [TranscriptSegment],
                                     existing: [Memory],
                                     sessionTitle: String?,
-                                    importedFrom: String?) -> String {
+                                    importedFrom: String?,
+                                    speakerNames: [Int: String] = [:]) -> String {
         let fmt = ISO8601DateFormatter()
         let transcript = segments.map { seg -> String in
             let mark = seg.marked ? " [IMPORTANT\(seg.markers.isEmpty ? "" : ": \(seg.markers.joined(separator: ", "))")]" : ""
-            return "(\(fmt.string(from: seg.start)))\(mark) \(seg.text)"
+            let who = seg.speaker.flatMap { speakerNames[$0] }.map { "\($0): " } ?? ""
+            return "(\(fmt.string(from: seg.start)))\(mark) \(who)\(seg.text)"
         }.joined(separator: "\n")
 
         // Give the model the existing memory titles so it can update/link rather than
@@ -181,7 +185,9 @@ enum Consolidator {
             sourceNote = "Reorganize these existing notes into this assistant's memories, preserving every fact."
         } else {
             sourceLabel = "NEW TRANSCRIPT SEGMENTS"
-            sourceNote = "Segments tagged [IMPORTANT] were explicitly flagged by the user — capture them and set importance 4–5."
+            let speakerNote = speakerNames.isEmpty ? "" :
+                " Lines may be prefixed with the speaker's name (e.g. \"Ben:\") — attribute facts, decisions, and commitments to the right person."
+            sourceNote = "Segments tagged [IMPORTANT] were explicitly flagged by the user — capture them and set importance 4–5.\(speakerNote)"
         }
 
         return """

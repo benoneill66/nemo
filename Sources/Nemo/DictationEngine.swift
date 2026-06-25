@@ -10,11 +10,15 @@ import Speech
 @MainActor
 final class DictationEngine: NSObject, SpeechEngine {
     var onPartial: ((String) -> Void)?
-    var onSegment: ((_ text: String, _ start: Date, _ end: Date) -> Void)?
+    var onSegment: ((_ text: String, _ start: Date, _ end: Date, _ voice: VoiceFingerprint?) -> Void)?
     var onStatus: ((SpeechEngineStatus) -> Void)?
     let displayName = "Enhanced dictation"
 
     static var isSupported: Bool { SpeechTranscriber.isAvailable }
+
+    // Voice fingerprinting for speaker diarization (nil when disabled in config).
+    private let profiler: VoiceProfiler? = Config.diarizationEnabled ? VoiceProfiler() : nil
+    private let voiceAnalyzer: VoiceAnalyzer? = Config.diarizationEnabled ? VoiceAnalyzer() : nil
 
     private let audioEngine = AVAudioEngine()
     private var transcriber: SpeechTranscriber?
@@ -122,10 +126,12 @@ final class DictationEngine: NSObject, SpeechEngine {
             return
         }
         let outFormat = analyzerFormat
+        let profiler = self.profiler
 
         // The tap fires on a realtime audio thread, so it captures everything it needs as
         // plain locals — it must never touch main-actor state (doing so traps the process).
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+            profiler?.append(buffer)
             let ratio = outFormat.sampleRate / buffer.format.sampleRate
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
             guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return }
@@ -206,8 +212,16 @@ final class DictationEngine: NSObject, SpeechEngine {
         let start = pendingStart ?? Date()
         pendingText = ""; pendingStart = nil
         onPartial?("")
-        guard !text.isEmpty else { return }
-        onSegment?(text, start, pendingEnd)
+        guard !text.isEmpty else { profiler?.reset(); return }
+        let voice = fingerprintForCommit()
+        onSegment?(text, start, pendingEnd, voice)
+    }
+
+    /// Distill the audio accumulated since the last flush into a voice fingerprint (and clear it).
+    private func fingerprintForCommit() -> VoiceFingerprint? {
+        guard let profiler, let voiceAnalyzer else { return nil }
+        let (samples, rate) = profiler.drain()
+        return voiceAnalyzer.fingerprint(samples: samples, rate: rate)
     }
 
     // MARK: - Authorization
@@ -232,6 +246,7 @@ final class DictationEngine: NSObject, SpeechEngine {
     // MARK: - Teardown
 
     private func teardownAudio() {
+        profiler?.reset()
         if audioEngine.isRunning { audioEngine.stop() }
         if tapInstalled {
             audioEngine.inputNode.removeTap(onBus: 0)

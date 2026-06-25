@@ -6,6 +6,16 @@ All notable changes to Nemo are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Speaker identification (diarization).** Tells apart distinct voices in the transcript
+  using on-device acoustic fingerprints (mel-frequency cepstral coefficients + pitch),
+  clustered online into "Speaker 1/2/…". Speakers are renameable, persist across launches
+  (a returning voice re-matches its identity), label each transcript line in the Live and
+  Sessions panes, and feed into how memories are attributed. Entirely local — only acoustic
+  features are derived, no audio is stored or sent. Tune with `"diarization"` /
+  `"speakerThreshold"` in `config.json`.
+
 ## [1.0.0] — 2026-06-25
 
 First public release.

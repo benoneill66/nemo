@@ -78,6 +78,14 @@ enum Config {
         (raw()["importPaths"] as? [String]) ?? []
     }
 
+    /// Speaker diarization: tell apart distinct voices in the transcript using on-device acoustic
+    /// fingerprints (MFCC + pitch), labelling segments "Speaker 1/2/…" (renameable). All local —
+    /// no audio leaves the Mac. Set "diarization": false in config.json to disable.
+    static var diarizationEnabled: Bool { (raw()["diarization"] as? Bool) ?? true }
+    /// How readily two voices are considered the same person. Higher = more lenient (collapses
+    /// speakers together); lower = splits more eagerly. ~1.5 is a reasonable middle.
+    static var speakerThreshold: Double { (raw()["speakerThreshold"] as? Double) ?? 1.5 }
+
     /// Transcription backend: "auto" (prefer enhanced dictation on macOS 26+), "dictation",
     /// or "legacy" (force the SFSpeechRecognizer path).
     static var engine: String { ((raw()["engine"] as? String) ?? "auto").lowercased() }

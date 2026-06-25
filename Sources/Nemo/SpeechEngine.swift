@@ -15,7 +15,9 @@ enum SpeechEngineStatus: Equatable {
 @MainActor
 protocol SpeechEngine: AnyObject {
     var onPartial: ((String) -> Void)? { get set }
-    var onSegment: ((_ text: String, _ start: Date, _ end: Date) -> Void)? { get set }
+    /// A finalized chunk of speech, with an optional voice fingerprint of the audio behind it
+    /// (nil when diarization is off or there wasn't enough voiced audio to characterize).
+    var onSegment: ((_ text: String, _ start: Date, _ end: Date, _ voice: VoiceFingerprint?) -> Void)? { get set }
     var onStatus: ((SpeechEngineStatus) -> Void)? { get set }
     /// Short label for the UI, e.g. "Enhanced dictation".
     var displayName: String { get }

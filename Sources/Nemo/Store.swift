@@ -24,6 +24,7 @@ enum Store {
     private static var memoriesURL: URL { dir.appendingPathComponent("memories.json") }
     private static var sessionsURL: URL { dir.appendingPathComponent("sessions.json") }
     private static var briefingURL: URL { dir.appendingPathComponent("briefing.json") }
+    private static var speakersURL: URL { dir.appendingPathComponent("speakers.json") }
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -55,9 +56,11 @@ enum Store {
     static func loadSessions() -> [Session] { load(sessionsURL, [Session].self) ?? [] }
 
     static func loadBriefing() -> Briefing? { load(briefingURL, Briefing.self) }
+    static func loadSpeakers() -> [SpeakerIdentity] { load(speakersURL, [SpeakerIdentity].self) ?? [] }
 
     static func saveSegments(_ v: [TranscriptSegment]) { save(v, to: segmentsURL) }
     static func saveMemories(_ v: [Memory]) { save(v, to: memoriesURL) }
     static func saveSessions(_ v: [Session]) { save(v, to: sessionsURL) }
     static func saveBriefing(_ v: Briefing) { save(v, to: briefingURL) }
+    static func saveSpeakers(_ v: [SpeakerIdentity]) { save(v, to: speakersURL) }
 }

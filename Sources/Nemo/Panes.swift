@@ -71,6 +71,11 @@ struct LivePane: View {
                 .padding(12).glassCard(cornerRadius: 14, tintHue: 0.55)
             }
 
+            // Speakers picked out of the conversation — tap any to give them a real name.
+            if !state.activeSpeakers.isEmpty {
+                SpeakersStrip()
+            }
+
             // Recent transcript.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
@@ -92,6 +97,7 @@ struct LivePane: View {
 }
 
 private struct SegmentRow: View {
+    @EnvironmentObject var state: AppState
     let seg: TranscriptSegment
     let toggle: () -> Void
     var body: some View {
@@ -99,9 +105,14 @@ private struct SegmentRow: View {
             Text(timeFmt.string(from: seg.start))
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
                 .frame(width: 78, alignment: .leading)
-            Text(seg.text)
-                .font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                if let sp = state.speaker(seg.speaker) {
+                    SpeakerTag(name: sp.name, hue: sp.hue)
+                }
+                Text(seg.text)
+                    .font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Button(action: toggle) {
                 Image(systemName: seg.marked ? "star.fill" : "star")
                     .foregroundStyle(seg.marked ? .yellow : .white.opacity(0.35))
@@ -109,6 +120,95 @@ private struct SegmentRow: View {
         }
         .padding(.vertical, 7).padding(.horizontal, 10)
         .background(RoundedRectangle(cornerRadius: 10).fill(seg.marked ? Color.yellow.opacity(0.1) : Color.white.opacity(0.04)))
+    }
+}
+
+/// A small colored dot + name shown beside a transcript line to mark who spoke it.
+private struct SpeakerTag: View {
+    let name: String
+    let hue: Double
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(Color(hue: hue, saturation: 0.7, brightness: 1))
+                .frame(width: 6, height: 6)
+            Text(name)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color(hue: hue, saturation: 0.55, brightness: 1).opacity(0.95))
+        }
+    }
+}
+
+// MARK: - Speakers (diarization)
+
+/// The distinct voices Nemo has separated out of the conversation. Each is a pill the user can
+/// tap to rename (e.g. "Speaker 2" → "Priya"); the name then flows through the transcript and
+/// into how memories are attributed.
+private struct SpeakersStrip: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.wave.2.fill").foregroundStyle(.mint)
+                Text("Speakers")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.75))
+                Text("identified on-device · tap to name")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(state.activeSpeakers) { sp in
+                        SpeakerRenamePill(speaker: sp)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(14)
+        .glassCard(cornerRadius: 16, tintHue: 0.45)
+    }
+}
+
+private struct SpeakerRenamePill: View {
+    @EnvironmentObject var state: AppState
+    let speaker: SpeakerIdentity
+    @State private var editing = false
+    @State private var draft = ""
+
+    var body: some View {
+        Button { draft = speaker.renamed ? speaker.name : ""; editing = true } label: {
+            HStack(spacing: 5) {
+                Circle().fill(Color(hue: speaker.hue, saturation: 0.7, brightness: 1))
+                    .frame(width: 8, height: 8)
+                Text(speaker.name).font(.system(size: 12, weight: .medium))
+                Image(systemName: "pencil").font(.system(size: 9)).opacity(0.5)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(Color(hue: speaker.hue, saturation: 0.7, brightness: 1).opacity(0.18)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+            .foregroundStyle(.white.opacity(0.92))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $editing, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Name this speaker").font(.system(size: 12, weight: .semibold))
+                TextField("e.g. Priya", text: $draft)
+                    .textFieldStyle(.roundedBorder).frame(width: 200)
+                    .onSubmit { commit() }
+                HStack {
+                    Button("Clear") { state.renameSpeaker(speaker.id, to: ""); editing = false }
+                        .controlSize(.small)
+                    Spacer()
+                    Button("Save") { commit() }.controlSize(.small).keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(14)
+            .frame(width: 230)
+        }
+    }
+
+    private func commit() {
+        state.renameSpeaker(speaker.id, to: draft)
+        editing = false
     }
 }
 
@@ -499,6 +599,12 @@ private struct SessionCard: View {
                     ForEach(state.segments(in: session).suffix(40)) { seg in
                         HStack(alignment: .top, spacing: 8) {
                             if seg.marked { Image(systemName: "star.fill").font(.system(size: 8)).foregroundStyle(.yellow) }
+                            if let sp = state.speaker(seg.speaker) {
+                                Text(sp.name)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color(hue: sp.hue, saturation: 0.55, brightness: 1))
+                                    .fixedSize()
+                            }
                             Text(seg.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
                         }
                     }
