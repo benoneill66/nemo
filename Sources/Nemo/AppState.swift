@@ -557,17 +557,68 @@ final class AppState: ObservableObject {
 
     // MARK: - Spoken answers ("hey Nemo …")
 
+    /// Retrieve the user's own memories most relevant to a spoken question — union of semantic
+    /// neighbours and lexical hits, deduped, archived excluded, capped at `answerMemoryK` (plan 11).
+    private func retrieveForQuestion(_ question: String) -> [Memory] {
+        let k = max(1, Config.answerMemoryK)
+        var ranked: [UUID] = []
+        if Config.semanticSurfaceEnabled, embeddings.isAvailable {
+            ranked = embeddings.search(question, limit: k * 2).map(\.id)
+        }
+        let lexical = Surfacer.rank(recent: question, memories: liveMemories, minScore: 1, limit: k).map(\.memory.id)
+
+        var seen = Set<UUID>(); var result: [Memory] = []
+        for id in ranked + lexical {
+            guard !seen.contains(id), let m = memory(id), !m.superseded else { continue }
+            seen.insert(id); result.append(m)
+            if result.count >= k { break }
+        }
+        return result
+    }
+
+    /// The last little while of speech, for conversational follow-ups in grounded answers.
+    private func recentTranscriptWindow() -> String {
+        let now = Date()
+        return segments
+            .filter { now.timeIntervalSince($0.end) <= Config.surfaceWindowSeconds }
+            .suffix(8).map(\.text).joined(separator: " ")
+    }
+
+    /// Reinforce memories that grounded an answer — being asked about is strong relevance (plan 11/02).
+    private func reinforceUsed(_ ids: [UUID]) {
+        guard Config.reinforcementEnabled, !ids.isEmpty else { return }
+        let now = Date(); var changed = false
+        for id in ids where memories.contains(where: { $0.id == id }) {
+            if let i = memories.firstIndex(where: { $0.id == id }) {
+                memories[i].hitCount += 1
+                memories[i].lastSurfaced = now
+                memories[i].weight = Reinforcement.reinforced(memories[i].weight)
+                changed = true
+            }
+        }
+        if changed { Store.saveMemories(memories) }
+    }
+
     private func answer(_ question: String) {
         guard !answering else { return }
         answering = true
         statusText = "Asking Claude…"
         let model = Config.memoryModel
-        let sys = "You are a friendly voice assistant answering out loud. Reply in one to three short, conversational sentences of plain spoken English — no markdown, lists, or URLs."
+
+        // Retrieval-augmented (plan 11): answer from the user's own memories first.
+        let grounded = Config.memoryGroundedAnswers
+        let retrieved = grounded ? retrieveForQuestion(question) : []
+        let sys = grounded ? MemoryQA.system :
+            "You are a friendly voice assistant answering out loud. Reply in one to three short, conversational sentences of plain spoken English — no markdown, lists, or URLs."
+        let prompt = grounded ? MemoryQA.prompt(question: question, memories: retrieved,
+                                                recent: recentTranscriptWindow()) : question
+        let usedIds = retrieved.map(\.id)
         Task {
             do {
-                let reply = try await AssistantRunner.claudeOneShot(prompt: question, system: sys,
+                let reply = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys,
                                                                    model: model, feature: "answer")
                 await MainActor.run {
+                    self.reinforceUsed(usedIds)   // being asked about is a strong relevance signal
                     self.lastAnswer = reply
                     self.clearAssistantHealth()
                     self.statusText = "Answering aloud…"
