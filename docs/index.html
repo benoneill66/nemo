@@ -193,6 +193,21 @@
         <p>Distills recent transcript into durable notes via the Claude CLI — categorized into People, Projects, Decisions, Action Items, Ideas… and linked into a graph.</p>
       </div>
       <div class="glass feature">
+        <div class="ic">🔎</div>
+        <h3>Surfaces what's relevant</h3>
+        <p>As you speak, an on-device engine — lexical plus sentence embeddings — instantly brings up the memories that matter, in a <em>Relevant now</em> strip. No LLM call, no wait.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ic">☀️</div>
+        <h3>Morning briefing</h3>
+        <p>Each day, a short spoken-style catch-up of open action items, unanswered questions, recent decisions, and what your last sessions covered.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ic">🗣️</div>
+        <h3>Tells speakers apart</h3>
+        <p>On-device acoustic fingerprints cluster distinct voices into Speaker 1/2/… — renameable, persistent across launches, and woven into how facts are attributed.</p>
+      </div>
+      <div class="glass feature">
         <div class="ic">🗂️</div>
         <h3>Captures meetings</h3>
         <p>Say "start meeting" or hit a button. Everything said is grouped, and when it ends Claude writes a summary and folds it into your memory.</p>
@@ -208,9 +223,24 @@
         <p>Auto-discovers Claude's existing file memories and parses them directly — instantly, no LLM — preserving their categories and interconnections.</p>
       </div>
       <div class="glass feature">
+        <div class="ic">✅</div>
+        <h3>Pushes tasks to Reminders</h3>
+        <p>Action items flow into Apple Reminders via EventKit — "I'll send the deck Friday" becomes a real reminder, not just a note. On-device, no network.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ic">🔌</div>
+        <h3>Works from your AI tools</h3>
+        <p>A bundled local MCP server exposes your memory graph (read-only) to clients like Claude Code and Claude Desktop — so they answer from your real-world context.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ic">⏸️</div>
+        <h3>Private on command</h3>
+        <p>A one-tap timed pause, automatic pausing when a sensitive app is frontmost, and an optional redaction pass that strips secrets before anything is stored or sent.</p>
+      </div>
+      <div class="glass feature">
         <div class="ic">💬</div>
         <h3>Answers out loud</h3>
-        <p>Say "Hey Nemo, …" and it routes the question to Claude and speaks the reply — while still transcribing in the background.</p>
+        <p>Say "Hey Nemo, …" and it routes the question to Claude — grounded in your most relevant memories — and speaks the reply, while still transcribing in the background.</p>
       </div>
     </div>
   </div>
@@ -241,6 +271,7 @@
       <p>Speech is processed entirely on-device. Only distilled text is ever sent, and only to your own logged-in Claude CLI. No servers, no telemetry, no API keys — everything stored as plain JSON under <code>~/.config/nemo/</code> that you can read or delete anytime.</p>
       <div class="pill-row">
         <span class="pill">🔒 On-device transcription</span>
+        <span class="pill">⏸️ Pause, exclude &amp; redact</span>
         <span class="pill">🚫 No telemetry</span>
         <span class="pill">🔑 No API keys</span>
         <span class="pill">📄 Plain-JSON storage</span>

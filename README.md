@@ -41,8 +41,10 @@ and Apple's Speech framework for transcription, so raw audio never leaves your M
   right moment. An on-device relevance engine watches the rolling transcript and, when a
   person, project, or topic comes up, instantly surfaces the memories that matter — the open
   action item, the decision you made last time, that person's preference — in a **Relevant
-  now** strip on the Live tab. No LLM call, so it's instant and free; it's weighted toward
-  actionable categories and fades out as the conversation moves on.
+  now** strip on the Live tab. It blends lexical matching with on-device sentence embeddings
+  (`NLEmbedding`), so it matches on **meaning**, not just shared words. No LLM call, so it's
+  instant and free; it's weighted toward actionable categories and fades out as the
+  conversation moves on.
 - **Morning briefing** — when you open Nemo each day it distills your memory into a short,
   spoken-style catch-up: what's outstanding (open action items, unanswered questions), recent
   decisions, and what your last sessions were about. It shows as a card on the Live tab (tap
@@ -64,8 +66,32 @@ and Apple's Speech framework for transcription, so raw audio never leaves your M
   categories and `[[links]]`), so they're **parsed directly — instantly, no LLM** — preserving
   their categories and interconnections. Freeform sources (a prose `CLAUDE.md`, a ChatGPT
   export) are distilled by Claude in large chunks run concurrently.
+- **Keeps the graph clean as it grows** — memories you keep touching are **reinforced** while
+  stale ones **decay** over a configurable half-life, so what's live floats to the top. A
+  periodic **dedupe** pass merges near-duplicates (by embedding similarity), and
+  **contradiction detection** marks an outdated fact as *superseded* — archived and restorable,
+  not silently coexisting with its replacement — when a newer one conflicts with it.
+- **Edit, pin & trace any memory** — fix a title, content, or category inline; **pin**
+  importance so automation won't override it; and tap a memory to see the exact transcript
+  segments it came from ("why is this here?"). Every edit is kept in a per-memory history.
+- **Private by command** — a one-tap **timed pause** (15 min / 1 hour / until you resume) from
+  the menu bar or by voice ("pause listening"), automatic pausing when an **excluded app** is
+  frontmost, and an optional **redaction** pass that strips secrets before anything is stored
+  or sent to Claude.
+- **Pushes tasks to Reminders** — action items can flow into **Apple Reminders** via EventKit,
+  from a memory's detail view or automatically, so "I'll send the deck Friday" becomes a real
+  reminder. On-device, no network.
+- **Shows what it's spending** — an **Activity** tab meters every background Claude call
+  (duration, tokens, outcome, by-feature breakdown, and how much the relevance gate is saving).
+  Metadata only — no prompt or response text is recorded.
+- **Works from your other AI tools** — a bundled local **MCP** server exposes your memory graph
+  (read-only) to clients like Claude Code and Claude Desktop. See [below](#use-your-memory-from-other-ai-tools-mcp).
+- **Resilient by default** — the Claude CLI is wrapped in typed errors, an up-front health
+  probe with an in-app banner if it's unavailable, and automatic retry with backoff for
+  transient failures.
 - **Answers out loud (bonus)** — say "Hey Nemo, …" and it routes the question to Claude and
-  speaks the reply, while still transcribing in the background.
+  speaks the reply, **grounded in the most relevant memories** from your graph, while still
+  transcribing in the background.
 
 ## How it works
 
@@ -126,12 +152,18 @@ Produces a drag-to-install disk image. Without a Developer ID signature, the fir
 
 A native SwiftUI window (plus a menu-bar control) with a frosted, glassmorphic look:
 
-- **Live** — what's being heard right now, the streaming transcript, and a *Consolidate Now*
-  button. Star any line to mark it important.
+- **Live** — what's being heard right now, the streaming transcript, the *Relevant now* strip,
+  the daily briefing card, and a *Consolidate Now* button. Star any line to mark it important.
 - **Memory** — the knowledge graph: filter by category, browse glass cards (title, notes,
-  importance, entities, link count), and open one to see everything it's *connected to*.
+  importance, entities, link count), and open one to *edit* it, *pin* its importance, see
+  everything it's *connected to*, trace its source transcript, or push it to Reminders.
 - **Sessions** — meetings and daily ambient capture, each with its summary and transcript.
 - **Import** — discovered assistant memories to seed from, one click each.
+- **Activity** — what Nemo's background AI is doing: per-call duration, tokens, outcome, a
+  by-feature breakdown, and the relevance gate's savings — metadata only.
+
+The menu-bar control adds a **Pause** menu (timed private mode) and a **Morning Briefing**
+action alongside the listening toggle.
 
 ## Configure (optional)
 
@@ -157,7 +189,26 @@ No API keys required — memory is built with your Claude CLI login. Config live
   "wakeWords": ["nemo", "nimo", "neemo"],
   "importPaths": ["~/Downloads/chatgpt-export"],
   "voice": "Zoe (Premium)",
-  "rate": 0.5
+  "rate": 0.5,
+
+  "surface": true,
+  "semanticSurface": true,
+  "briefing": true,
+  "briefingSpeak": false,
+  "reinforcement": true,
+  "decayHalfLifeDays": 30,
+  "dedupe": true,
+  "contradictionDetection": true,
+  "redaction": true,
+  "excludedApps": ["1Password", "Messages"],
+  "pausePhrases": ["pause listening", "stop recording"],
+  "memoryGroundedAnswers": true,
+  "calendarExport": false,
+  "autoExportTasks": false,
+  "remindersListName": "Nemo",
+  "usageTracking": true,
+  "mcp": true,
+  "storageBackend": "json"
 }
 ```
 
@@ -184,6 +235,28 @@ No API keys required — memory is built with your Claude CLI login. Config live
 - `voice` / `rate` — TTS voice and speed for spoken answers. Omit `voice` to auto-pick the
   best English voice installed. Download **Premium** voices in *System Settings →
   Accessibility → Spoken Content → System Voice → Manage Voices*.
+- `surface` / `semanticSurface` — the live *Relevant now* engine, and whether it blends
+  on-device embeddings (meaning) with lexical matching. Fine-tune with `surfaceWindowSeconds`,
+  `surfaceTTLSeconds`, `surfaceMax`, `surfaceMinScore`, `semanticWeight`, `semanticFloor`.
+- `briefing` / `briefingSpeak` — the once-a-day morning briefing, and whether it's read aloud
+  automatically (off by default — it shows as a tap-to-hear card).
+- `reinforcement` / `decayHalfLifeDays` — reinforce memories that recur and decay stale ones
+  over this half-life (in days).
+- `dedupe` / `contradictionDetection` — periodic merge of near-duplicate memories, and marking
+  an outdated fact as superseded when a newer one conflicts. Fine-tune with `dedupeEveryNNew`,
+  `dedupeCosine`.
+- `redaction` — strip secrets before anything is persisted or sent to Claude.
+- `excludedApps` — app names that auto-pause capture while they're frontmost.
+- `pausePhrases` / `resumePhrases` — spoken phrases that enter/leave private-mode pause.
+- `memoryGroundedAnswers` — ground "Hey Nemo" answers in retrieved memories (`answerMemoryK`
+  sets how many).
+- `calendarExport` / `autoExportTasks` / `remindersListName` — enable Apple Reminders export,
+  whether action items export automatically, and which Reminders list to use.
+- `usageTracking` — record per-call LLM metadata for the Activity tab (`usageRetentionDays`
+  bounds how long it's kept). Resilience: `maxRetries`, `retryBackoffSeconds`.
+- `mcp` / `mcpAllowWrite` — enable the local MCP server, and (off by default) allow it to write.
+- `storageBackend` — `"json"` (default) or `"sqlite"` (indexed store with full-text transcript
+  search; see [Where data lives](#where-data-lives)).
 
 ## Where data lives
 
@@ -233,13 +306,26 @@ Tools: `search_memories` (semantic + keyword), `list_recent`, `list_action_items
 | `Sources/Nemo/DictationEngine.swift` | macOS 26 `SpeechAnalyzer` enhanced dictation |
 | `Sources/Nemo/TranscriptionEngine.swift` | `SFSpeechRecognizer` fallback transcription |
 | `Sources/Nemo/Consolidator.swift` | Distills transcript → categorized, linked memory |
+| `Sources/Nemo/Surfacer.swift` | On-device *Relevant now* engine (lexical + embeddings) |
+| `Sources/Nemo/EmbeddingIndex.swift` | On-device `NLEmbedding` vectors + cosine search |
+| `Sources/Nemo/Briefer.swift` | Builds the once-a-day morning briefing |
+| `Sources/Nemo/Reinforcement.swift` | Memory reinforcement & time decay |
+| `Sources/Nemo/Maintenance.swift` | Periodic dedupe + contradiction/supersede pass |
+| `Sources/Nemo/MemoryQA.swift` | Retrieval-augmented answers for "Hey Nemo" |
 | `Sources/Nemo/SpeakerDiarizer.swift` | On-device voice fingerprinting + speaker clustering |
+| `Sources/Nemo/Redactor.swift` | Secret-stripping redaction before persist/send |
 | `Sources/Nemo/ContextImporter.swift` | Seeds memory from other assistants' files |
+| `Sources/Nemo/EventKitExporter.swift` | Exports action items to Apple Reminders |
+| `Sources/Nemo/UsageLog.swift` | LLM call metering for the Activity tab |
+| `Sources/Nemo/Pricing.swift` | Token-cost estimates for usage reporting |
 | `Sources/Nemo/Models.swift` | Segment / Memory / Session / Speaker / Category models |
-| `Sources/Nemo/Store.swift` | JSON persistence |
+| `Sources/Nemo/Store.swift` | Persistence (JSON, with optional SQLite backend) |
+| `Sources/Nemo/SQLite.swift` | Thin `libsqlite3` wrapper (system library) |
+| `Sources/Nemo/SQLiteStore.swift` | Indexed SQLite store + full-text transcript search |
 | `Sources/Nemo/Config.swift` | Typed view over `config.json` |
 | `Sources/Nemo/Speaker.swift` | Text-to-speech for spoken answers |
 | `Sources/Nemo/Assistants.swift` | Claude CLI plumbing + spoken-text sanitizing |
+| `Sources/NemoMCP/main.swift` | Local MCP server exposing the memory graph (read-only) |
 | `build.sh` | Compile → assemble `.app` (icon + entitlements) → sign |
 | `install.sh` | Build → install to `/Applications` → launch |
 | `package.sh` | Build → drag-to-install `Nemo.dmg` |
