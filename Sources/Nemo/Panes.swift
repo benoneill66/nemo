@@ -426,6 +426,7 @@ private struct MemoryCard: View {
                         .foregroundStyle(Color(hue: mem.categoryEnum.hue, saturation: 0.6, brightness: 1))
                     Text(mem.category).font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                     Spacer()
+                    if mem.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.yellow.opacity(0.85)) }
                     ImportanceDots(level: mem.importance)
                 }
                 Text(mem.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
@@ -464,18 +465,16 @@ private struct MemoryDetail: View {
     let mem: Memory
     let close: () -> Void
 
+    @State private var editing = false
+    @State private var draftTitle = ""
+    @State private var draftContent = ""
+    @State private var draftCategory = ""
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    GlassPill(text: mem.category, systemImage: mem.categoryEnum.symbol, hue: mem.categoryEnum.hue)
-                    Spacer()
-                    Button(action: close) { Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5)) }
-                        .buttonStyle(.plain)
-                }
-                Text(mem.title).font(.system(size: 18, weight: .bold))
-                Text(mem.content).font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                header
+                if editing { editor } else { reader }
 
                 if !mem.entities.isEmpty {
                     label("Entities")
@@ -497,20 +496,132 @@ private struct MemoryDetail: View {
                     }
                 }
 
-                HStack(spacing: 10) {
-                    GlassPill(text: mem.source, systemImage: "antenna.radiowaves.left.and.right")
-                    Spacer()
-                    Button(action: { state.deleteMemory(mem.id); close() }) {
-                        Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
-                    }.buttonStyle(.plain)
-                }
-                .padding(.top, 4)
+                sourceSection
+
+                footer
                 Spacer()
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .glassCard(cornerRadius: 22, tintHue: mem.categoryEnum.hue, strong: true)
+    }
+
+    // MARK: Header (category + pin + close)
+
+    private var header: some View {
+        HStack {
+            if editing {
+                Picker("", selection: $draftCategory) {
+                    ForEach(Category.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+                }
+                .labelsHidden().frame(width: 150)
+            } else {
+                GlassPill(text: mem.category, systemImage: mem.categoryEnum.symbol, hue: mem.categoryEnum.hue)
+            }
+            Spacer()
+            Button { state.setPinned(mem.id, !mem.pinned) } label: {
+                Image(systemName: mem.pinned ? "pin.fill" : "pin")
+                    .foregroundStyle(mem.pinned ? .yellow : .white.opacity(0.5))
+            }.buttonStyle(.plain).help(mem.pinned ? "Unpin" : "Pin (protect from automation)")
+            Button(action: close) { Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5)) }
+                .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: Read vs edit body
+
+    private var reader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(mem.title).font(.system(size: 18, weight: .bold))
+                if mem.userEdited {
+                    Image(systemName: "pencil.circle.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            Text(mem.content).font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Text("Importance").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+                ImportanceDots(level: mem.importance)
+            }
+        }
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Title", text: $draftTitle).textFieldStyle(.roundedBorder)
+            TextEditor(text: $draftContent)
+                .font(.system(size: 13)).frame(minHeight: 90)
+                .scrollContentBackground(.hidden)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.06)))
+            HStack(spacing: 8) {
+                Text("Importance").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+                Stepper(value: Binding(get: { mem.importance },
+                                       set: { state.setImportance(mem.id, $0) }),
+                        in: 1...5) { ImportanceDots(level: mem.importance) }
+                    .labelsHidden()
+            }
+        }
+    }
+
+    // MARK: Provenance
+
+    @ViewBuilder private var sourceSection: some View {
+        let sources = state.sourceSegments(for: mem.id)
+        if !sources.isEmpty {
+            label("Source")
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(sources) { seg in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(timeFmt.string(from: seg.start))
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
+                            .frame(width: 64, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 1) {
+                            if let name = state.speakerName(seg.speaker) {
+                                Text(name).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+                            }
+                            Text(seg.text).font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
+                }
+            }
+        } else if !mem.sourceSegmentIds.isEmpty {
+            label("Source")
+            Text("Original speech is no longer retained.")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+        }
+    }
+
+    // MARK: Footer (edit / save / delete)
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            GlassPill(text: mem.source, systemImage: "antenna.radiowaves.left.and.right")
+            Spacer()
+            if editing {
+                Button("Save") {
+                    state.updateMemory(mem.id, title: draftTitle, content: draftContent, category: draftCategory)
+                    editing = false
+                }.controlSize(.small).keyboardShortcut(.defaultAction)
+                Button("Cancel") { editing = false }.controlSize(.small)
+            } else {
+                Button { beginEditing() } label: {
+                    Image(systemName: "pencil").foregroundStyle(.white.opacity(0.8))
+                }.buttonStyle(.plain).help("Edit")
+                Button(action: { state.deleteMemory(mem.id); close() }) {
+                    Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func beginEditing() {
+        draftTitle = mem.title
+        draftContent = mem.content
+        draftCategory = mem.categoryEnum.rawValue
+        editing = true
     }
 
     private func label(_ t: String) -> some View {

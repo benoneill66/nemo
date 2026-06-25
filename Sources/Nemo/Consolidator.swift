@@ -69,8 +69,10 @@ enum Consolidator {
         let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys, model: model)
         let payload = try parse(raw)
         let source = importedFrom.map { "import:\($0)" } ?? "transcript"
+        // Provenance (plan 05): live transcript segments are traceable; imports aren't.
+        let provenance = importedFrom == nil ? segments.map(\.id) : []
         return merge(drafts: payload.memories ?? [], into: existing,
-                     summary: payload.summary, source: source)
+                     summary: payload.summary, source: source, sourceSegmentIds: provenance)
     }
 
     /// Distills many independent batches **concurrently** (capped), then merges them once.
@@ -249,10 +251,15 @@ enum Consolidator {
     // MARK: - Merge
 
     static func merge(drafts: [Draft], into existing: [Memory],
-                      summary: String?, source: String) -> Output {
+                      summary: String?, source: String, sourceSegmentIds: [UUID] = []) -> Output {
         var memories = existing
         var byTitle: [String: Int] = [:]   // lowercased title -> index
         for (i, m) in memories.enumerated() { byTitle[m.title.lowercased()] = i }
+
+        // Provenance is attributed at batch granularity (plan 05): every memory touched this
+        // round records the segments that fed the round, capped to bound growth.
+        let provenanceCap = 20
+        let provenance = Array(sourceSegmentIds.suffix(provenanceCap))
 
         var created = 0, updated = 0
         // Track titles touched this round so "related" can link new-to-new too.
@@ -269,16 +276,22 @@ enum Consolidator {
                 .filter { !$0.isEmpty }
 
             if let idx = byTitle[key] {
-                memories[idx].content = content
+                // Honour user edits: don't clobber text the user rewrote, just enrich metadata.
+                if !memories[idx].userEdited { memories[idx].content = content }
                 memories[idx].category = category
                 memories[idx].entities = Array(Set(memories[idx].entities + entities)).sorted()
                 memories[idx].importance = max(memories[idx].importance, importance)
                 memories[idx].updated = Date()
+                if !provenance.isEmpty {
+                    memories[idx].sourceSegmentIds =
+                        Array((memories[idx].sourceSegmentIds + provenance).suffix(provenanceCap))
+                }
                 touched[key] = memories[idx].id
                 updated += 1
             } else {
-                let mem = Memory(title: title, content: content, category: category,
+                var mem = Memory(title: title, content: content, category: category,
                                  entities: entities, importance: importance, source: source)
+                mem.sourceSegmentIds = provenance
                 memories.append(mem)
                 byTitle[key] = memories.count - 1
                 touched[key] = mem.id

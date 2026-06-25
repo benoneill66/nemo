@@ -351,8 +351,12 @@ final class AppState: ObservableObject {
         guard days > 0 else { return }
         let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
         let meetingSessions = Set(sessions.filter { $0.kind == .meeting }.map(\.id))
+        // Keep any segment a memory cites as its provenance (plan 05) so "view source" never
+        // dead-ends. Bounded because provenance ids are capped per memory.
+        let cited = Set(memories.flatMap(\.sourceSegmentIds))
         segments.removeAll { seg in
             seg.consolidated && !seg.marked && seg.end < cutoff
+                && !cited.contains(seg.id)
                 && !(seg.sessionId.map(meetingSessions.contains) ?? false)
         }
     }
@@ -545,6 +549,45 @@ final class AppState: ObservableObject {
         for i in memories.indices { memories[i].links.removeAll { $0 == id } }
         embeddings.remove(id)
         Store.saveMemories(memories)
+    }
+
+    // MARK: - Memory editing & provenance (plan 05)
+
+    /// Apply a user edit. Marks the memory `userEdited` so consolidation won't clobber the text,
+    /// re-embeds it, and persists. Pass nil for any field to leave it unchanged.
+    func updateMemory(_ id: UUID, title: String? = nil, content: String? = nil, category: String? = nil) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            memories[i].title = title
+        }
+        if let content = content?.trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty {
+            memories[i].content = content
+        }
+        if let category, !category.isEmpty { memories[i].category = Category.match(category).rawValue }
+        memories[i].userEdited = true
+        memories[i].updated = Date()
+        embeddings.sync(memories)
+        Store.saveMemories(memories)
+    }
+
+    func setImportance(_ id: UUID, _ value: Int) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        memories[i].importance = min(5, max(1, value))
+        memories[i].updated = Date()
+        Store.saveMemories(memories)
+    }
+
+    func setPinned(_ id: UUID, _ pinned: Bool) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        memories[i].pinned = pinned
+        Store.saveMemories(memories)
+    }
+
+    /// The transcript segments a memory was distilled from (provenance), oldest first.
+    func sourceSegments(for id: UUID) -> [TranscriptSegment] {
+        guard let mem = memory(id) else { return [] }
+        let ids = Set(mem.sourceSegmentIds)
+        return segments.filter { ids.contains($0.id) }.sorted { $0.start < $1.start }
     }
 
     func toggleMark(_ segmentId: UUID) {
