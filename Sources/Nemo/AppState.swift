@@ -219,18 +219,48 @@ final class AppState: ObservableObject {
         statusText = "Consolidating memory…"
         let snapshot = memories
         let model = Config.memoryModel
+        // Explicit meetings are consolidated wholesale — the user chose to record them, so we
+        // don't second-guess relevance there. Ambient chatter goes through the cheap gate.
+        let useGate = Config.relevanceGateEnabled && sessionId == nil
+        let gateModel = Config.gateModel
         let ids = Set(pending.map { $0.id })
 
         Task {
             do {
-                let out = try await Consolidator.consolidate(segments: pending, existing: snapshot,
+                // 1. Cheap relevance gate: keep only segments worth remembering; discard the
+                //    rest. If the gate fails, fall back to keeping everything (old behaviour).
+                var relevant = pending
+                var junkIds: Set<UUID> = []
+                if useGate {
+                    let keep = (try? await Consolidator.gate(segments: pending, model: gateModel))
+                        ?? Set(pending.indices)
+                    relevant = pending.enumerated().filter { keep.contains($0.offset) }.map(\.element)
+                    junkIds = Set(pending.enumerated().filter { !keep.contains($0.offset) }.map(\.element.id))
+                }
+
+                // 2. Nothing worth remembering — drop the junk, skip the expensive call entirely.
+                if relevant.isEmpty {
+                    await MainActor.run {
+                        self.segments.removeAll { junkIds.contains($0.id) }
+                        self.pruneConsolidatedTranscript()
+                        Store.saveSegments(self.segments)
+                        self.isConsolidating = false
+                        self.statusText = "Nothing to remember (\(junkIds.count) dropped)"
+                    }
+                    return
+                }
+
+                // 3. Distill the relevant segments into memory with the full model.
+                let out = try await Consolidator.consolidate(segments: relevant, existing: snapshot,
                                                             model: model, sessionTitle: sessionTitle)
                 await MainActor.run {
                     self.memories = out.memories
                     Store.saveMemories(self.memories)
+                    self.segments.removeAll { junkIds.contains($0.id) }
                     for i in self.segments.indices where ids.contains(self.segments[i].id) {
                         self.segments[i].consolidated = true
                     }
+                    self.pruneConsolidatedTranscript()
                     Store.saveSegments(self.segments)
                     if let sid = sessionId, let s = out.summary,
                        let idx = self.sessions.firstIndex(where: { $0.id == sid }) {
@@ -238,7 +268,8 @@ final class AppState: ObservableObject {
                         Store.saveSessions(self.sessions)
                     }
                     self.isConsolidating = false
-                    self.statusText = "Memory updated (+\(out.created) new, \(out.updated) refined)"
+                    let dropped = junkIds.isEmpty ? "" : ", \(junkIds.count) dropped"
+                    self.statusText = "Memory updated (+\(out.created) new, \(out.updated) refined\(dropped))"
                 }
             } catch {
                 await MainActor.run {
@@ -246,6 +277,20 @@ final class AppState: ObservableObject {
                     self.statusText = "Consolidation failed: \(error.localizedDescription)"
                 }
             }
+        }
+    }
+
+    /// Bound transcript growth: once a segment has been folded into memory, the raw text is
+    /// only useful for a while. Drop consolidated segments past the retention window — but
+    /// always keep user-marked segments and meeting transcripts.
+    private func pruneConsolidatedTranscript() {
+        let days = Config.transcriptRetentionDays
+        guard days > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        let meetingSessions = Set(sessions.filter { $0.kind == .meeting }.map(\.id))
+        segments.removeAll { seg in
+            seg.consolidated && !seg.marked && seg.end < cutoff
+                && !(seg.sessionId.map(meetingSessions.contains) ?? false)
         }
     }
 

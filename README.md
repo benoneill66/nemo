@@ -29,10 +29,14 @@ and Apple's Speech framework for transcription, so raw audio never leaves your M
   uses Apple's new `SpeechAnalyzer`/`SpeechTranscriber` — the same enhanced-dictation engine
   the system uses — for higher accuracy, automatic punctuation, and true long-form capture.
   Older systems fall back to `SFSpeechRecognizer`. The active engine is shown in the sidebar.
-- **Builds memory** — every few minutes (and when a meeting ends) it sends recent transcript
-  to Claude, which distills durable notes, **categorizes** them (People, Projects, Decisions,
-  Action Items, Preferences, Facts, Meetings, Ideas, Open Questions…), and **links** related
-  memories into a graph (by reference and by shared entities).
+- **Builds memory** — every few minutes (and when a meeting ends) recent transcript first
+  passes a **cheap relevance gate** (a fast Haiku model) that decides which lines hold anything
+  worth keeping; pure chit-chat is dropped and never reaches the expensive model. Whatever
+  survives goes to Claude, which distills durable notes, **categorizes** them (People, Projects,
+  Decisions, Action Items, Preferences, Facts, Meetings, Ideas, Open Questions…), and **links**
+  related memories into a graph (by reference and by shared entities). Irrelevant raw segments
+  are discarded immediately, and consolidated ones are pruned after a retention window, so the
+  transcript stays small (your marked moments and meeting transcripts are always kept).
 - **Surfaces what's relevant, as you speak** — the point of a memory is having it at the
   right moment. An on-device relevance engine watches the rolling transcript and, when a
   person, project, or topic comes up, instantly surfaces the memories that matter — the open
@@ -134,6 +138,9 @@ No API keys required — memory is built with your Claude CLI login. Config live
   "consolidateMinutes": 5,
   "consolidateMinSegments": 6,
   "memoryModel": "claude-sonnet-4-6",
+  "gateModel": "claude-haiku-4-5",
+  "relevanceGate": true,
+  "transcriptRetentionDays": 7,
   "markers": ["important", "remember this", "action item", "note to self", "follow up"],
   "meetingStart": ["start meeting", "begin meeting"],
   "meetingStop": ["end meeting", "stop meeting"],
@@ -152,6 +159,10 @@ No API keys required — memory is built with your Claude CLI login. Config live
 - `consolidateMinutes` / `consolidateMinSegments` — how often memory is rebuilt (by time, or
   once this many new segments pile up).
 - `memoryModel` — Claude model used for consolidation & import.
+- `gateModel` — cheap/fast model for the pre-consolidation relevance gate (defaults to Haiku).
+- `relevanceGate` — set `false` to consolidate every segment (skip the gate entirely).
+- `transcriptRetentionDays` — days to keep consolidated raw segments before pruning (`0` keeps
+  them forever). Marked moments and meeting transcripts are never auto-pruned.
 - `markers` — spoken phrases that flag a moment as important.
 - `meetingStart` / `meetingStop` — spoken phrases that open/close a meeting session.
 - `wakeAnswer` — set `false` to disable the spoken "Hey Nemo, …" answer feature.

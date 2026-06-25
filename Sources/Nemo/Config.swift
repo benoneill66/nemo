@@ -59,6 +59,19 @@ enum Config {
     /// Model used for memory consolidation / import (kept fast + cheap by default).
     static var memoryModel: String? { (raw()["memoryModel"] as? String) ?? "claude-sonnet-4-6" }
 
+    /// Cheap, fast model for the relevance gate that runs *before* consolidation: it decides
+    /// which raw segments are worth remembering so we only spend the expensive model on those
+    /// (and never call it at all on a batch of pure chit-chat). Defaults to Haiku.
+    static var gateModel: String? { (raw()["gateModel"] as? String) ?? "claude-haiku-4-5" }
+    /// Whether the pre-consolidation relevance gate runs. Off → every segment is consolidated
+    /// (the old behaviour). Set "relevanceGate": false in config.json to disable.
+    static var relevanceGateEnabled: Bool { (raw()["relevanceGate"] as? Bool) ?? true }
+
+    /// How many days to keep raw transcript segments after they've been consolidated. Older
+    /// consolidated segments are pruned to bound disk growth; user-marked segments and meeting
+    /// transcripts are always kept. 0 disables pruning.
+    static var transcriptRetentionDays: Int { (raw()["transcriptRetentionDays"] as? Int) ?? 7 }
+
     /// Extra files/dirs of existing assistant memory to offer for import, beyond the
     /// auto-discovered Claude locations.
     static var importPaths: [String] {

@@ -36,6 +36,15 @@ enum Consolidator {
     crisp third-person notes the user would value weeks later. Output ONLY valid JSON.
     """
 
+    private static let gateSystem = """
+    You are a fast relevance filter for an always-listening assistant's long-term memory. You \
+    receive numbered lines of raw speech transcript — noisy, full of filler, half-sentences, \
+    and misheard words. Decide which lines contain anything worth remembering for weeks: \
+    facts, decisions, plans, tasks or commitments, people and details about them, preferences, \
+    dates, numbers, or open questions. Exclude greetings, small talk, thinking-aloud, \
+    acknowledgements, and noise. When unsure, exclude. Output ONLY valid JSON.
+    """
+
     private static let importSystem = """
     You are the memory engine of a personal assistant, importing what another AI assistant \
     already knows about the user. You receive that assistant's saved memory notes and must \
@@ -110,6 +119,40 @@ enum Consolidator {
         return merge(drafts: allDrafts, into: existing, summary: summary, source: source)
     }
 
+    // MARK: - Relevance gate
+
+    private struct GatePayload: Decodable { var relevant: [Int]? }
+
+    /// Cheap pre-pass: ask a fast model which segments hold anything worth remembering, so the
+    /// expensive consolidation only sees those (and is skipped entirely for idle chit-chat).
+    /// Returns the **indices into `segments`** that should be kept. User-marked segments are
+    /// always kept regardless of the model's verdict. Throws if the model output is unusable,
+    /// so callers can fall back to keeping everything.
+    static func gate(segments: [TranscriptSegment], model: String?) async throws -> Set<Int> {
+        guard !segments.isEmpty else { return [] }
+        let lines = segments.enumerated().map { i, seg in
+            let mark = seg.marked ? " [IMPORTANT]" : ""
+            return "\(i):\(mark) \(seg.text)"
+        }.joined(separator: "\n")
+
+        let prompt = """
+        TRANSCRIPT LINES:
+        \(lines)
+
+        List the indices of lines worth remembering long-term. Lines tagged [IMPORTANT] were \
+        explicitly flagged by the user — always include them. Respond with ONLY this JSON, no \
+        prose, no markdown fences:
+        {"relevant": [0, 2]}
+        If nothing is worth remembering, return {"relevant": []}.
+        """
+        let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: gateSystem, model: model)
+        let payload: GatePayload = try parseJSON(raw)
+        let valid = (payload.relevant ?? []).filter { $0 >= 0 && $0 < segments.count }
+        var keep = Set(valid)
+        for (i, seg) in segments.enumerated() where seg.marked { keep.insert(i) }
+        return keep
+    }
+
     // MARK: - Prompt
 
     private static func buildPrompt(segments: [TranscriptSegment],
@@ -173,7 +216,11 @@ enum Consolidator {
 
     // MARK: - Parse
 
-    private static func parse(_ raw: String) throws -> Payload {
+    private static func parse(_ raw: String) throws -> Payload { try parseJSON(raw) }
+
+    /// Decodes the first JSON object in a model response, tolerating ```json fences and stray
+    /// prose around it. Shared by the consolidation parser and the relevance gate.
+    private static func parseJSON<T: Decodable>(_ raw: String) throws -> T {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // Strip ```json fences if the model added them despite instructions.
         if s.hasPrefix("```") {
@@ -188,7 +235,7 @@ enum Consolidator {
             throw NSError(domain: "Nemo", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "Consolidator produced unreadable output."])
         }
-        return try JSONDecoder().decode(Payload.self, from: data)
+        return try JSONDecoder().decode(T.self, from: data)
     }
 
     // MARK: - Merge
