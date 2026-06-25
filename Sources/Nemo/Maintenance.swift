@@ -158,7 +158,9 @@ extension Consolidator {
         var byId = Dictionary(uniqueKeysWithValues: memories.map { ($0.id, $0) })
         for act in actions {
             guard var older = byId[act.older], var newer = byId[act.newer],
-                  act.older != act.newer, !older.superseded else { continue }
+                  act.older != act.newer, !older.superseded,
+                  !newer.superseded   // never point at an already-archived survivor (breaks cycles)
+            else { continue }
             older.superseded = true
             older.supersededBy = act.newer
             byId[act.older] = older

@@ -18,6 +18,26 @@ final class SurfacerHybridTests: XCTestCase {
         XCTAssertTrue(hits.first?.reason.hasPrefix("Related:") ?? false)
     }
 
+    func testStrongSemanticSurfacesAtDefaultMinScore() {
+        // Regression: with the lexical-tuned default minScore (3.0), a strong semantic-only
+        // neighbour must still surface (it can't reach 3.0 via the semantic term alone).
+        let m = mem("Quarterly planning", "deadline for the launch")
+        let hits = Surfacer.rankHybrid(recent: "totally unrelated words here", memories: [m],
+                                       semantic: [m.id: 0.7], semanticWeight: 4, semanticFloor: 0.3,
+                                       minScore: 3.0)
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertTrue(hits.first?.reason.hasPrefix("Related:") ?? false)
+    }
+
+    func testWeakSemanticNeighbourNotAdmitted() {
+        // Just above the floor but not clearly relevant → excluded (no lexical anchor).
+        let m = mem("Quarterly planning", "deadline for the launch")
+        let hits = Surfacer.rankHybrid(recent: "totally unrelated words here", memories: [m],
+                                       semantic: [m.id: 0.36], semanticWeight: 4, semanticFloor: 0.3,
+                                       minScore: 3.0)
+        XCTAssertTrue(hits.isEmpty)
+    }
+
     func testSubFloorSemanticIsIgnored() {
         let m = mem("Quarterly planning", "deadline for the launch")
         let hits = Surfacer.rankHybrid(recent: "totally unrelated words here", memories: [m],

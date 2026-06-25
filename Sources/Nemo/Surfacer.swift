@@ -141,8 +141,12 @@ enum Surfacer {
             let lexScore = (lex?.raw ?? 0) * weight(mem.categoryEnum)
             let score = lexScore + semScore + 0.18 * mem.effectiveImportance
 
-            let anchor = (lex?.anchor ?? false) || semScore > 0
-            guard anchor, score >= minScore else { continue }
+            // A lexical hit must clear the lexical-tuned `minScore`. A *semantic-only* hit is
+            // admitted on its own merit — a clearly-relevant neighbour (comfortably above the
+            // floor) — since the lexical `minScore` is unreachable by the semantic term alone.
+            let lexQualifies = (lex?.anchor ?? false) && score >= minScore
+            let semQualifies = cosine >= semanticFloor + 0.15
+            guard lexQualifies || semQualifies else { continue }
 
             let matched = lex?.matched ?? []
             // Semantic-only match (no lexical terms): explain it by the memory itself.

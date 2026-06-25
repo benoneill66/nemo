@@ -396,9 +396,7 @@ final class AppState: ObservableObject {
                                                             model: model, sessionTitle: sessionTitle,
                                                             speakerNames: speakerNames)
                 await MainActor.run {
-                    self.memories = out.memories
-                    Store.saveMemories(self.memories)
-                    self.embeddings.sync(self.memories)
+                    self.applyMemoryResult(out.memories, base: snapshot)
                     self.segments.removeAll { junkIds.contains($0.id) }
                     for i in self.segments.indices where ids.contains(self.segments[i].id) {
                         self.segments[i].consolidated = true
@@ -606,9 +604,7 @@ final class AppState: ObservableObject {
                     }
                 }
                 await MainActor.run {
-                    self.memories = out.memories
-                    Store.saveMemories(self.memories)
-                    self.embeddings.sync(self.memories)
+                    self.applyMemoryResult(out.memories, base: snapshot)
                     self.isImporting = false
                     self.statusText = "Imported \(label): +\(out.created) new, \(out.updated) updated"
                 }
@@ -704,6 +700,40 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Apply the result of an async LLM pass (consolidation / maintenance / import) without
+    /// clobbering direct edits the user made to `memories` *during* the pass's await. The pass
+    /// computed `result` from `base` (the snapshot at start); we reconcile by id against the
+    /// current `memories`:
+    ///  - user deleted a memory mid-pass (in base, gone now) → keep it deleted
+    ///  - user edited a memory mid-pass (`userEdited` flipped on) → keep the user's version
+    ///  - a memory added/changed concurrently that the pass never saw → preserve it
+    private func applyMemoryResult(_ result: [Memory], base: [Memory]) {
+        let baseIds = Set(base.map(\.id))
+        let baseEditedIds = Set(base.filter { $0.userEdited }.map(\.id))
+        let current = Dictionary(memories.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        var merged: [Memory] = []
+        var used = Set<UUID>()
+        for m in result {
+            // Honour a delete made during the pass.
+            if baseIds.contains(m.id), current[m.id] == nil { continue }
+            // Honour an edit made during the pass (wasn't user-edited in the base, is now).
+            if let cur = current[m.id], cur.userEdited, !baseEditedIds.contains(m.id) {
+                merged.append(cur)
+            } else {
+                merged.append(m)
+            }
+            used.insert(m.id)
+        }
+        // Preserve memories created concurrently that the pass never saw.
+        for m in memories where !used.contains(m.id) && !baseIds.contains(m.id) {
+            merged.append(m)
+        }
+        memories = merged
+        Store.saveMemories(memories)
+        embeddings.sync(memories)
+    }
+
     // MARK: - CLI resilience & usage (plans 08 / 09)
 
     /// A successful CLI call proves the assistant is healthy — clear any banner and reset backoff.
@@ -714,14 +744,15 @@ final class AppState: ObservableObject {
 
     /// Classify a failed CLI call: surface hard-down states (install/login) as a persistent
     /// banner, and schedule a backoff retry for transient ones (rate limit / timeout / generic).
-    private func handleAssistantFailure(_ error: Error, context: String, retry: @escaping () -> Void) {
+    private func handleAssistantFailure(_ error: Error, context: String,
+                                        retriable: Bool = true, retry: @escaping () -> Void = {}) {
         guard let ae = error as? AssistantError else {
             statusText = "\(context) failed: \(error.localizedDescription)"
             return
         }
         statusText = "\(context): \(ae.localizedDescription)"
         if ae.isHardDown { assistantHealth = ae }
-        guard ae.isTransient, consolidateRetries < Config.maxRetries else { return }
+        guard retriable, ae.isTransient, consolidateRetries < Config.maxRetries else { return }
 
         // Exponential backoff, honouring a server-provided retry-after when present.
         var delay = Config.retryBackoffSeconds * pow(2, Double(consolidateRetries))
@@ -782,9 +813,7 @@ final class AppState: ObservableObject {
             do {
                 let out = try await Consolidator.maintain(memories: snapshot, pairs: pairs, model: model)
                 await MainActor.run {
-                    self.memories = out.memories
-                    Store.saveMemories(self.memories)
-                    self.embeddings.sync(self.memories)
+                    self.applyMemoryResult(out.memories, base: snapshot)
                     self.isDeduping = false
                     self.clearAssistantHealth()
                     if out.updated > 0 { self.statusText = "Tidied memory (\(out.updated) merged/updated)" }
@@ -792,7 +821,7 @@ final class AppState: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.isDeduping = false
-                    self.handleAssistantFailure(error, context: "Tidy", retry: {})
+                    self.handleAssistantFailure(error, context: "Tidy", retriable: false)
                 }
             }
         }
@@ -905,13 +934,29 @@ final class AppState: ObservableObject {
     }
 
     /// After consolidation, optionally push new dated action items to Reminders (opt-in, capped).
+    /// Runs as a single serialized task — one access request, sequential saves — so it can't
+    /// race EKEventStore or create duplicate "Nemo" lists.
     private func maybeAutoExportTasks() {
         guard Config.calendarExportEnabled, Config.autoExportTasks else { return }
-        let candidates = liveMemories.filter {
+        let candidateIds = liveMemories.filter {
             $0.categoryEnum == .tasks && $0.exportedReminderId == nil
                 && DateExtractor.firstDate(in: $0.title + " " + $0.content) != nil
-        }.prefix(10)
-        for m in candidates { exportToReminders(m.id) }
+        }.prefix(10).map(\.id)
+        guard !candidateIds.isEmpty else { return }
+        let listName = Config.remindersListName
+        Task {
+            guard await eventKit.requestRemindersAccess() else { return }
+            for id in candidateIds {
+                guard var m = self.memory(id) else { continue }
+                if m.due == nil { m.due = DateExtractor.firstDate(in: m.title + " " + m.content) }
+                guard let rid = try? self.eventKit.exportReminder(memory: m, listName: listName) else { continue }
+                if let i = self.memories.firstIndex(where: { $0.id == id }) {
+                    self.memories[i].exportedReminderId = rid
+                    self.memories[i].due = m.due
+                }
+            }
+            Store.saveMemories(self.memories)
+        }
     }
 
     /// The transcript segments a memory was distilled from (provenance), oldest first.

@@ -113,6 +113,14 @@ enum Settings {
     ]
 }
 
+/// Thread-safe one-shot flag for signalling that the exec watchdog fired.
+private final class TimeoutFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// Runs an assistant's CLI for a single prompt, optionally streaming text deltas.
 enum AssistantRunner {
     private static var home: String { NSHomeDirectory() }
@@ -334,7 +342,10 @@ enum AssistantRunner {
 
                 do { try p.run() } catch { cont.resume(throwing: error); return }
 
-                let timer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+                // Track whether *our* watchdog killed the process, so a subprocess that crashes on
+                // its own signal isn't misclassified as a timeout.
+                let didTimeOut = TimeoutFlag()
+                let timer = DispatchWorkItem { if p.isRunning { didTimeOut.set(); p.terminate() } }
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
 
                 let handle = out.fileHandleForReading
@@ -356,13 +367,10 @@ enum AssistantRunner {
 
                 let errData = errp.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit(); timer.cancel()
-                // Our watchdog is the only thing that signals the process, so a signal
-                // termination means we timed out (vs. a normal exit code).
-                let timedOut = (p.terminationReason == .uncaughtSignal)
                 cont.resume(returning: (p.terminationStatus,
                                         String(data: full, encoding: .utf8) ?? "",
                                         String(data: errData, encoding: .utf8) ?? "",
-                                        timedOut))
+                                        didTimeOut.get()))
             }
         }
     }
