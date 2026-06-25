@@ -331,11 +331,14 @@ private struct SurfacedCard: View {
 struct MemoryPane: View {
     @EnvironmentObject var state: AppState
     @State private var filter: Category? = nil
+    @State private var showArchived = false
     @State private var selected: Memory?
 
     private var shown: [Memory] {
-        let base = filter.map { state.memories(in: $0) } ?? state.memories
-        return base.sorted { $0.importance != $1.importance ? $0.importance > $1.importance : $0.updated > $1.updated }
+        if showArchived { return state.archivedMemories.sorted { $0.updated > $1.updated } }
+        let base = filter.map { state.memories(in: $0) } ?? state.liveMemories
+        return base.sorted { $0.effectiveImportance != $1.effectiveImportance
+            ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
     }
     private let cols = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)]
 
@@ -346,14 +349,19 @@ struct MemoryPane: View {
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        CategoryChip(label: "All", symbol: "circle.grid.2x2", count: state.memories.count,
-                                     selected: filter == nil) { filter = nil }
+                        CategoryChip(label: "All", symbol: "circle.grid.2x2", count: state.liveMemories.count,
+                                     selected: filter == nil && !showArchived) { filter = nil; showArchived = false }
                         ForEach(Category.allCases, id: \.self) { cat in
                             let n = state.memories(in: cat).count
                             if n > 0 {
                                 CategoryChip(label: cat.rawValue, symbol: cat.symbol, count: n,
-                                             hue: cat.hue, selected: filter == cat) { filter = cat }
+                                             hue: cat.hue, selected: filter == cat && !showArchived) { filter = cat; showArchived = false }
                             }
+                        }
+                        let archived = state.archivedMemories.count
+                        if archived > 0 {
+                            CategoryChip(label: "Archived", symbol: "archivebox", count: archived,
+                                         selected: showArchived) { showArchived = true; filter = nil }
                         }
                     }
                 }
@@ -426,6 +434,7 @@ private struct MemoryCard: View {
                         .foregroundStyle(Color(hue: mem.categoryEnum.hue, saturation: 0.6, brightness: 1))
                     Text(mem.category).font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                     Spacer()
+                    if mem.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.yellow.opacity(0.85)) }
                     ImportanceDots(level: mem.importance)
                 }
                 Text(mem.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
@@ -464,18 +473,16 @@ private struct MemoryDetail: View {
     let mem: Memory
     let close: () -> Void
 
+    @State private var editing = false
+    @State private var draftTitle = ""
+    @State private var draftContent = ""
+    @State private var draftCategory = ""
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    GlassPill(text: mem.category, systemImage: mem.categoryEnum.symbol, hue: mem.categoryEnum.hue)
-                    Spacer()
-                    Button(action: close) { Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5)) }
-                        .buttonStyle(.plain)
-                }
-                Text(mem.title).font(.system(size: 18, weight: .bold))
-                Text(mem.content).font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                header
+                if editing { editor } else { reader }
 
                 if !mem.entities.isEmpty {
                     label("Entities")
@@ -497,20 +504,167 @@ private struct MemoryDetail: View {
                     }
                 }
 
-                HStack(spacing: 10) {
-                    GlassPill(text: mem.source, systemImage: "antenna.radiowaves.left.and.right")
-                    Spacer()
-                    Button(action: { state.deleteMemory(mem.id); close() }) {
-                        Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
-                    }.buttonStyle(.plain)
+                sourceSection
+
+                if Config.calendarExportEnabled && mem.categoryEnum == .tasks && !mem.superseded {
+                    Button {
+                        state.exportToReminders(mem.id)
+                    } label: {
+                        Label(mem.exportedReminderId == nil ? "Add to Reminders" : "Update Reminder",
+                              systemImage: mem.exportedReminderId == nil ? "checklist" : "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.cyan.opacity(0.9))
                 }
-                .padding(.top, 4)
+
+                if mem.superseded {
+                    HStack(spacing: 8) {
+                        Image(systemName: "archivebox.fill").foregroundStyle(.orange)
+                        Text("Archived — superseded by a newer memory")
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                        Spacer()
+                        Button("Restore") { state.restoreMemory(mem.id) }.controlSize(.small)
+                    }
+                    .padding(10).background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.16)))
+                }
+
+                if !mem.history.isEmpty {
+                    label("History")
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(mem.history.enumerated()), id: \.offset) { _, note in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "clock.arrow.circlepath").font(.system(size: 9))
+                                    .foregroundStyle(.white.opacity(0.4))
+                                Text(note).font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                            }
+                        }
+                    }
+                }
+
+                footer
                 Spacer()
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .glassCard(cornerRadius: 22, tintHue: mem.categoryEnum.hue, strong: true)
+    }
+
+    // MARK: Header (category + pin + close)
+
+    private var header: some View {
+        HStack {
+            if editing {
+                Picker("", selection: $draftCategory) {
+                    ForEach(Category.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+                }
+                .labelsHidden().frame(width: 150)
+            } else {
+                GlassPill(text: mem.category, systemImage: mem.categoryEnum.symbol, hue: mem.categoryEnum.hue)
+            }
+            Spacer()
+            Button { state.setPinned(mem.id, !mem.pinned) } label: {
+                Image(systemName: mem.pinned ? "pin.fill" : "pin")
+                    .foregroundStyle(mem.pinned ? .yellow : .white.opacity(0.5))
+            }.buttonStyle(.plain).help(mem.pinned ? "Unpin" : "Pin (protect from automation)")
+            Button(action: close) { Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5)) }
+                .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: Read vs edit body
+
+    private var reader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(mem.title).font(.system(size: 18, weight: .bold))
+                if mem.userEdited {
+                    Image(systemName: "pencil.circle.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            Text(mem.content).font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Text("Importance").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+                ImportanceDots(level: mem.importance)
+            }
+        }
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Title", text: $draftTitle).textFieldStyle(.roundedBorder)
+            TextEditor(text: $draftContent)
+                .font(.system(size: 13)).frame(minHeight: 90)
+                .scrollContentBackground(.hidden)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.06)))
+            HStack(spacing: 8) {
+                Text("Importance").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+                Stepper(value: Binding(get: { mem.importance },
+                                       set: { state.setImportance(mem.id, $0) }),
+                        in: 1...5) { ImportanceDots(level: mem.importance) }
+                    .labelsHidden()
+            }
+        }
+    }
+
+    // MARK: Provenance
+
+    @ViewBuilder private var sourceSection: some View {
+        let sources = state.sourceSegments(for: mem.id)
+        if !sources.isEmpty {
+            label("Source")
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(sources) { seg in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(timeFmt.string(from: seg.start))
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
+                            .frame(width: 64, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 1) {
+                            if let name = state.speakerName(seg.speaker) {
+                                Text(name).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+                            }
+                            Text(seg.text).font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
+                }
+            }
+        } else if !mem.sourceSegmentIds.isEmpty {
+            label("Source")
+            Text("Original speech is no longer retained.")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+        }
+    }
+
+    // MARK: Footer (edit / save / delete)
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            GlassPill(text: mem.source, systemImage: "antenna.radiowaves.left.and.right")
+            Spacer()
+            if editing {
+                Button("Save") {
+                    state.updateMemory(mem.id, title: draftTitle, content: draftContent, category: draftCategory)
+                    editing = false
+                }.controlSize(.small).keyboardShortcut(.defaultAction)
+                Button("Cancel") { editing = false }.controlSize(.small)
+            } else {
+                Button { beginEditing() } label: {
+                    Image(systemName: "pencil").foregroundStyle(.white.opacity(0.8))
+                }.buttonStyle(.plain).help("Edit")
+                Button(action: { state.deleteMemory(mem.id); close() }) {
+                    Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func beginEditing() {
+        draftTitle = mem.title
+        draftContent = mem.content
+        draftCategory = mem.categoryEnum.rawValue
+        editing = true
     }
 
     private func label(_ t: String) -> some View {
@@ -613,6 +767,121 @@ private struct SessionCard: View {
         }
         .padding(14)
         .glassCard(cornerRadius: 16, tintHue: session.kind == .meeting ? 0.08 : 0.14)
+    }
+}
+
+// MARK: - Activity (LLM usage & cost — plan 09)
+
+struct ActivityPane: View {
+    @EnvironmentObject var state: AppState
+
+    private var today: UsageRollup { state.usageRollup(days: 1) }
+    private var week: UsageRollup { state.usageRollup(days: 7) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PaneHeader(title: "Activity", subtitle: "What Nemo's background AI is doing — metadata only, on-device.")
+
+            HStack(spacing: 12) {
+                RollupCard(title: "Today", rollup: today)
+                RollupCard(title: "Last 7 days", rollup: week)
+            }
+
+            if let rate = week.gateDropRate {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill").foregroundStyle(.green)
+                    Text("Relevance gate dropped \(Int(rate * 100))% of segments")
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                    Text("(\(week.gateKept) kept · \(week.gateDropped) dropped, saving expensive calls)")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .glassCard(cornerRadius: 14, tintHue: 0.4)
+            }
+
+            if !week.byFeature.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("BY FEATURE · 7 DAYS").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+                    ForEach(week.byFeature.sorted { $0.value > $1.value }, id: \.key) { feat, n in
+                        HStack {
+                            Text(feat.capitalized).font(.system(size: 12)).foregroundStyle(.white.opacity(0.85))
+                            Spacer()
+                            Text("\(n) call\(n == 1 ? "" : "s")").font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                }
+                .padding(14).glassCard(cornerRadius: 16, tintHue: 0.6)
+            }
+
+            recentList
+        }
+        .padding(20).glassCard(cornerRadius: 22)
+    }
+
+    private var recentList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("RECENT CALLS").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(state.usage.filter(\.isCall).suffix(60).reversed()) { e in
+                        HStack(spacing: 8) {
+                            Circle().fill(e.outcome == "ok" ? Color.green.opacity(0.8) : Color.orange.opacity(0.9))
+                                .frame(width: 6, height: 6)
+                            Text(timeFmt.string(from: e.at)).font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.4)).frame(width: 78, alignment: .leading)
+                            Text(e.feature).font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 90, alignment: .leading)
+                            Text("\(e.durationMs) ms").font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+                            Spacer()
+                            if let i = e.inputTokens, let o = e.outputTokens {
+                                Text("\(i)↓ \(o)↑\(e.estimated ? " est" : "")")
+                                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                            }
+                        }
+                        .padding(.vertical, 3).padding(.horizontal, 8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.04)))
+                    }
+                    if state.usage.filter(\.isCall).isEmpty {
+                        Text("No AI activity yet. Memories consolidate as you talk.")
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)).padding(.top, 20)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+}
+
+private struct RollupCard: View {
+    let title: String
+    let rollup: UsageRollup
+
+    private func fmt(_ n: Int) -> String {
+        n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased()).font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+            Text("\(rollup.calls)").font(.system(size: 30, weight: .bold)).foregroundStyle(.white)
+            Text("call\(rollup.calls == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+            Divider().overlay(.white.opacity(0.1))
+            stat("Tokens", "\(fmt(rollup.inputTokens))↓ \(fmt(rollup.outputTokens))↑")
+            stat("Est. cost", String(format: "$%.3f%@", rollup.estimatedCost, rollup.anyEstimated ? " est" : ""))
+            if rollup.failureRate > 0 {
+                stat("Failures", "\(Int(rollup.failureRate * 100))%")
+            }
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(cornerRadius: 16, tintHue: 0.13)
+    }
+
+    private func stat(_ k: String, _ v: String) -> some View {
+        HStack {
+            Text(k).font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+            Spacer()
+            Text(v).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
+        }
     }
 }
 

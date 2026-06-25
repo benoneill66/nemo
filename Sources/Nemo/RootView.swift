@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Tab: String, CaseIterable, Identifiable {
-    case live = "Live", memory = "Memory", sessions = "Sessions", importing = "Import"
+    case live = "Live", memory = "Memory", sessions = "Sessions", importing = "Import", activity = "Activity"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -9,6 +9,7 @@ enum Tab: String, CaseIterable, Identifiable {
         case .memory: return "brain.head.profile"
         case .sessions: return "calendar"
         case .importing: return "square.and.arrow.down.on.square"
+        case .activity: return "chart.bar.fill"
         }
     }
 }
@@ -56,6 +57,8 @@ struct RootView: View {
                 state.inMeeting ? state.endMeeting() : state.startMeeting(title: nil)
             }
 
+            PauseControl()
+
             VStack(spacing: 4) {
                 ForEach(Tab.allCases) { t in
                     NavRow(tab: t, selected: tab == t,
@@ -80,6 +83,7 @@ struct RootView: View {
         case .memory: MemoryPane()
         case .sessions: SessionsPane()
         case .importing: ImportPane()
+        case .activity: ActivityPane()
         }
     }
 }
@@ -114,6 +118,38 @@ private struct NavRow: View {
     }
 }
 
+/// Timed private-mode pause (plan 06): a quick menu of durations, or resume when paused.
+struct PauseControl: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        if state.isPaused {
+            GlassButton(title: resumeTitle, systemImage: "play.fill") { state.resumeFromPause() }
+        } else if state.listening {
+            Menu {
+                Button("Pause 15 minutes") { state.pause(for: 15 * 60) }
+                Button("Pause 1 hour") { state.pause(for: 60 * 60) }
+                Button("Pause until I resume") { state.pause(for: 8 * 60 * 60) }
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .menuStyle(.borderlessButton)
+            .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.08)))
+            .foregroundStyle(.white.opacity(0.85))
+        }
+    }
+
+    private var resumeTitle: String {
+        if let until = state.pausedUntil {
+            let mins = max(0, Int(until.timeIntervalSinceNow / 60))
+            return "Resume (paused \(mins)m left)"
+        }
+        return "Resume"
+    }
+}
+
 /// A pulsing orb that reflects whether the mic is live.
 struct ListeningOrb: View {
     let active: Bool
@@ -141,6 +177,16 @@ struct StatusFooter: View {
     @EnvironmentObject var state: AppState
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let health = state.assistantHealth {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(health.localizedDescription)
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.92))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.18)))
+            }
             if state.isConsolidating || state.isImporting {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

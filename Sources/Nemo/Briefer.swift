@@ -22,7 +22,8 @@ enum Briefer {
     /// Generate today's briefing. Throws if the Claude CLI is unavailable or returns nothing.
     static func generate(memories: [Memory], sessions: [Session], model: String?) async throws -> String {
         let prompt = buildPrompt(memories: memories, sessions: sessions)
-        return try await AssistantRunner.claudeOneShot(prompt: prompt, system: system, model: model)
+        return try await AssistantRunner.claudeOneShot(prompt: prompt, system: system, model: model,
+                                                       feature: "brief")
     }
 
     /// Assemble the structured notes Claude briefs from. Bounded so the prompt stays small.
@@ -35,8 +36,8 @@ enum Briefer {
 
         func list(_ cat: Category, max: Int) -> [Memory] {
             memories.filter { $0.categoryEnum == cat }
-                .sorted { $0.importance != $1.importance ? $0.importance > $1.importance
-                                                         : $0.updated > $1.updated }
+                .sorted { $0.effectiveImportance != $1.effectiveImportance
+                    ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
                 .prefix(max).map { $0 }
         }
         func render(_ mems: [Memory]) -> String {

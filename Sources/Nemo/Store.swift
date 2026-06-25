@@ -25,6 +25,8 @@ enum Store {
     private static var sessionsURL: URL { dir.appendingPathComponent("sessions.json") }
     private static var briefingURL: URL { dir.appendingPathComponent("briefing.json") }
     private static var speakersURL: URL { dir.appendingPathComponent("speakers.json") }
+    private static var embeddingsURL: URL { dir.appendingPathComponent("embeddings.json") }
+    private static var usageURL: URL { dir.appendingPathComponent("usage.json") }
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -51,16 +53,48 @@ enum Store {
         }
     }
 
-    static func loadSegments() -> [TranscriptSegment] { load(segmentsURL, [TranscriptSegment].self) ?? [] }
-    static func loadMemories() -> [Memory] { load(memoriesURL, [Memory].self) ?? [] }
+    // MARK: - SQLite backend (plan 10) — opt-in via Config.storageBackend == "sqlite".
+
+    private static let sqlite: SQLiteStore? = {
+        guard Config.storageBackend == "sqlite" else { return nil }
+        let store = SQLiteStore(path: dir.appendingPathComponent("nemo.db").path)
+        // One-time migration from existing JSON; JSON files are left in place as a backup.
+        store?.migrateFromJSONIfEmpty(memories: load(memoriesURL, [Memory].self) ?? [],
+                                      segments: load(segmentsURL, [TranscriptSegment].self) ?? [])
+        return store
+    }()
+    private static var useSQLite: Bool { sqlite != nil }
+
+    static func loadSegments() -> [TranscriptSegment] {
+        if let s = sqlite { return s.loadSegments() }
+        return load(segmentsURL, [TranscriptSegment].self) ?? []
+    }
+    static func loadMemories() -> [Memory] {
+        if let s = sqlite { return s.loadMemories() }
+        return load(memoriesURL, [Memory].self) ?? []
+    }
     static func loadSessions() -> [Session] { load(sessionsURL, [Session].self) ?? [] }
 
     static func loadBriefing() -> Briefing? { load(briefingURL, Briefing.self) }
     static func loadSpeakers() -> [SpeakerIdentity] { load(speakersURL, [SpeakerIdentity].self) ?? [] }
 
-    static func saveSegments(_ v: [TranscriptSegment]) { save(v, to: segmentsURL) }
-    static func saveMemories(_ v: [Memory]) { save(v, to: memoriesURL) }
+    static func saveSegments(_ v: [TranscriptSegment]) {
+        if let s = sqlite { s.saveSegments(v) }   // primary store
+        save(v, to: segmentsURL)                   // JSON mirror / backup (also default backend)
+    }
+    static func saveMemories(_ v: [Memory]) {
+        if let s = sqlite { s.saveMemories(v) }
+        save(v, to: memoriesURL)
+    }
     static func saveSessions(_ v: [Session]) { save(v, to: sessionsURL) }
     static func saveBriefing(_ v: Briefing) { save(v, to: briefingURL) }
     static func saveSpeakers(_ v: [SpeakerIdentity]) { save(v, to: speakersURL) }
+
+    // Semantic embedding cache (plan 01) — safe to delete; rebuilds on next sync.
+    static func loadEmbeddingCache() -> EmbeddingCache? { load(embeddingsURL, EmbeddingCache.self) }
+    static func saveEmbeddingCache(_ v: EmbeddingCache) { save(v, to: embeddingsURL) }
+
+    // LLM usage log (plan 09) — metadata only, never prompt/response text.
+    static func loadUsage() -> [UsageEvent] { load(usageURL, [UsageEvent].self) ?? [] }
+    static func saveUsage(_ v: [UsageEvent]) { save(v, to: usageURL) }
 }

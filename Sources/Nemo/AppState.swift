@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 /// The brain of the always-listening assistant. Owns the transcription engine, applies
 /// keyword marking + session routing to each segment, persists everything, periodically
@@ -19,6 +20,7 @@ final class AppState: ObservableObject {
     @Published private(set) var partialText = ""           // what's being heard right now
     @Published private(set) var isConsolidating = false
     @Published private(set) var isImporting = false
+    @Published private(set) var isDeduping = false           // graph maintenance in flight (plan 03)
     @Published private(set) var lastAnswer: String?        // last spoken "hey Nemo" reply
     @Published private(set) var importSources: [ContextImporter.Source] = []
     @Published private(set) var surfaced: [SurfacedMemory] = []  // relevant-right-now memories
@@ -26,10 +28,15 @@ final class AppState: ObservableObject {
     @Published private(set) var isBriefing = false
     @Published var briefingDismissed = false                    // hidden for this session
     @Published private(set) var speakingBriefing = false
+    @Published private(set) var assistantHealth: AssistantError? // nil = CLI healthy (plan 08)
+    @Published private(set) var usage: [UsageEvent] = []         // metered LLM activity (plan 09)
+    @Published private(set) var pausedUntil: Date?              // timed private-mode pause (plan 06)
 
     private let engine: SpeechEngine = makeSpeechEngine()
     private let speaker = Speaker()
     private let diarizer = SpeakerDiarizer(threshold: Float(Config.speakerThreshold))
+    private let embeddings = EmbeddingIndex()   // on-device semantic index (plans 01, 11)
+    private let eventKit = EventKitExporter()    // Reminders export (plan 13)
 
     /// Which transcription backend is active (shown in the UI).
     var engineName: String { engine.displayName }
@@ -37,6 +44,10 @@ final class AppState: ObservableObject {
     private var consolidateTimer: Timer?
     private var surfaceTimer: Timer?
     private var answering = false
+    private var consolidateRetries = 0   // backoff counter for transient CLI failures (plan 08)
+    private var createdSinceDedupe = 0    // new memories since the last dedupe pass (plan 03)
+    private var pauseTimer: Timer?        // auto-resume after a timed pause (plan 06)
+    private var autoPausedForApp = false  // paused because a sensitive app came to front (plan 06)
 
     private let wakePrefixes = ["hey ", "hey, ", "okay ", "ok ", "hi ", "yo "]
 
@@ -49,8 +60,18 @@ final class AppState: ObservableObject {
         briefing = Store.loadBriefing()
         // Restore learned voices so returning speakers keep their identity (and name).
         diarizer.seed(speakers.map { (id: $0.id, centroid: $0.centroid, count: $0.count) })
+        usage = Store.loadUsage()
+        assistantHealth = AssistantRunner.health()   // probe CLI availability up front
+        // Meter every Claude CLI call into the usage log (plans 08/09). Metadata only.
+        AssistantRunner.onUsage = { [weak self] event in
+            Task { @MainActor in self?.recordUsage(event) }
+        }
+        setupAppExclusionObserver()   // auto-pause near sensitive apps (plan 06)
         refreshImportSources()   // walks ~/.claude off the main thread
+        maybeDecay()             // relax stale reinforcement weights, once per day
         maybeAutoBrief()         // generate today's briefing if we haven't already
+        // Build the semantic index after init returns, so it doesn't block launch.
+        Task { @MainActor in self.embeddings.sync(self.memories) }
 
         engine.onStatus = { [weak self] s in self?.handleStatus(s) }
         engine.onPartial = { [weak self] t in self?.partialText = t }
@@ -69,8 +90,9 @@ final class AppState: ObservableObject {
     var markedSegments: [TranscriptSegment] { segments.filter { $0.marked } }
 
     func memories(in category: Category) -> [Memory] {
-        memories.filter { $0.categoryEnum == category }
-            .sorted { $0.importance != $1.importance ? $0.importance > $1.importance : $0.updated > $1.updated }
+        memories.filter { $0.categoryEnum == category && !$0.superseded }
+            .sorted { $0.effectiveImportance != $1.effectiveImportance
+                ? $0.effectiveImportance > $1.effectiveImportance : $0.updated > $1.updated }
     }
     func memory(_ id: UUID) -> Memory? { memories.first { $0.id == id } }
     func segments(in session: Session) -> [TranscriptSegment] {
@@ -97,6 +119,51 @@ final class AppState: ObservableObject {
         statusText = "Paused"
     }
 
+    // MARK: - Privacy: pause & app exclusion (plan 06)
+
+    /// Temporarily stop listening (private mode), auto-resuming after `seconds`.
+    func pause(for seconds: TimeInterval) {
+        guard listening else { return }
+        stop()
+        pausedUntil = Date().addingTimeInterval(seconds)
+        statusText = "Paused (private mode)"
+        pauseTimer?.invalidate()
+        pauseTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.resumeFromPause() }
+        }
+    }
+
+    /// Resume from a timed or app-triggered pause.
+    func resumeFromPause() {
+        pauseTimer?.invalidate(); pauseTimer = nil
+        pausedUntil = nil
+        autoPausedForApp = false
+        start()
+    }
+
+    var isPaused: Bool { pausedUntil != nil || autoPausedForApp }
+
+    private func setupAppExclusionObserver() {
+        guard !Config.excludedApps.isEmpty else { return }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let bundle = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            Task { @MainActor in self?.handleFrontmostApp(bundle) }
+        }
+    }
+
+    private func handleFrontmostApp(_ bundle: String?) {
+        let excluded = bundle.map { Config.excludedApps.contains($0) } ?? false
+        if excluded, listening {
+            stop()
+            autoPausedForApp = true
+            statusText = "Paused — sensitive app in focus"
+        } else if !excluded, autoPausedForApp {
+            resumeFromPause()
+        }
+    }
+
     private func handleStatus(_ s: SpeechEngineStatus) {
         switch s {
         case .listening:
@@ -115,11 +182,25 @@ final class AppState: ObservableObject {
     private func ingest(text: String, start: Date, end: Date, voice: VoiceFingerprint? = nil) {
         var seg = TranscriptSegment(text: text, start: start, end: end)
 
-        // 0. Attribute the segment to a speaker by clustering its voice fingerprint.
+        // 0a. Spoken pause control (plan 06): drop the triggering segment entirely so any sensitive
+        //     lead-in isn't captured, and stop listening for a while.
+        let rawLower = text.lowercased()
+        if Config.pausePhrases.contains(where: { rawLower.contains($0) }) {
+            pause(for: 30 * 60)
+            return
+        }
+
+        // 0b. Redact obviously-sensitive content before anything is stored or sent to the LLM.
+        if Config.redactionEnabled {
+            let (clean, did) = Redactor.scrub(text)
+            if did { seg.text = clean; seg.redacted = true }
+        }
+
+        // 1. Attribute the segment to a speaker by clustering its voice fingerprint.
         if let voice { seg.speaker = attributeSpeaker(voice) }
 
-        // 1. Keyword marking.
-        let lower = text.lowercased()
+        // 2. Keyword marking (on the post-redaction text).
+        let lower = seg.text.lowercased()
         let hits = Config.markers.filter { lower.contains($0) }
         if !hits.isEmpty { seg.marked = true; seg.markers = hits }
 
@@ -140,7 +221,7 @@ final class AppState: ObservableObject {
         if Config.surfaceEnabled { refreshSurfaced() }
 
         // 5. Optional spoken answer to "hey Nemo …".
-        if Config.wakeAnswerEnabled, let q = wakeQuestion(in: lower, original: text) {
+        if Config.wakeAnswerEnabled, let q = wakeQuestion(in: lower, original: seg.text) {
             answer(q)
         }
 
@@ -256,7 +337,7 @@ final class AppState: ObservableObject {
 
     /// Consolidate all not-yet-processed segments into memory.
     func consolidateNow() {
-        guard !isConsolidating else { return }
+        guard !isConsolidating, !isDeduping, !isImporting else { return }
         let pending = segments.filter { !$0.consolidated }
         guard pending.count >= 1 else { return }
         runConsolidation(of: pending, sessionTitle: inMeeting ? currentSession?.title : nil)
@@ -264,7 +345,7 @@ final class AppState: ObservableObject {
 
     /// Consolidate just one session's segments (used when a meeting ends).
     private func consolidateSession(_ session: Session) {
-        guard !isConsolidating else { return }
+        guard !isConsolidating, !isDeduping, !isImporting else { return }
         let segs = segments.filter { $0.sessionId == session.id && !$0.consolidated }
         guard !segs.isEmpty else { return }
         runConsolidation(of: segs, sessionTitle: session.title, summarize: session.id)
@@ -303,6 +384,8 @@ final class AppState: ObservableObject {
                         self.pruneConsolidatedTranscript()
                         Store.saveSegments(self.segments)
                         self.isConsolidating = false
+                        self.clearAssistantHealth()
+                        if useGate { self.noteGateOutcome(kept: 0, dropped: junkIds.count) }
                         self.statusText = "Nothing to remember (\(junkIds.count) dropped)"
                     }
                     return
@@ -313,8 +396,7 @@ final class AppState: ObservableObject {
                                                             model: model, sessionTitle: sessionTitle,
                                                             speakerNames: speakerNames)
                 await MainActor.run {
-                    self.memories = out.memories
-                    Store.saveMemories(self.memories)
+                    self.applyMemoryResult(out.memories, base: snapshot)
                     self.segments.removeAll { junkIds.contains($0.id) }
                     for i in self.segments.indices where ids.contains(self.segments[i].id) {
                         self.segments[i].consolidated = true
@@ -327,13 +409,23 @@ final class AppState: ObservableObject {
                         Store.saveSessions(self.sessions)
                     }
                     self.isConsolidating = false
+                    self.clearAssistantHealth()
+                    if useGate { self.noteGateOutcome(kept: relevant.count, dropped: junkIds.count) }
                     let dropped = junkIds.isEmpty ? "" : ", \(junkIds.count) dropped"
                     self.statusText = "Memory updated (+\(out.created) new, \(out.updated) refined\(dropped))"
+                    // Periodically tidy the graph once enough new memories have accumulated.
+                    self.createdSinceDedupe += out.created
+                    if Config.dedupeEnabled, self.createdSinceDedupe >= Config.dedupeEveryNNew {
+                        self.createdSinceDedupe = 0
+                        self.maintainNow()
+                    }
+                    self.maybeAutoExportTasks()
                 }
             } catch {
                 await MainActor.run {
                     self.isConsolidating = false
-                    self.statusText = "Consolidation failed: \(error.localizedDescription)"
+                    self.handleAssistantFailure(error, context: "Consolidation",
+                                                retry: { [weak self] in self?.consolidateNow() })
                 }
             }
         }
@@ -347,8 +439,12 @@ final class AppState: ObservableObject {
         guard days > 0 else { return }
         let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
         let meetingSessions = Set(sessions.filter { $0.kind == .meeting }.map(\.id))
+        // Keep any segment a memory cites as its provenance (plan 05) so "view source" never
+        // dead-ends. Bounded because provenance ids are capped per memory.
+        let cited = Set(memories.flatMap(\.sourceSegmentIds))
         segments.removeAll { seg in
             seg.consolidated && !seg.marked && seg.end < cutoff
+                && !cited.contains(seg.id)
                 && !(seg.sessionId.map(meetingSessions.contains) ?? false)
         }
     }
@@ -367,7 +463,8 @@ final class AppState: ObservableObject {
     /// Re-rank memories against the last little while of speech and merge into the live set:
     /// refresh anything that re-matched, keep recent matches decaying, drop the stale.
     private func refreshSurfaced() {
-        guard !memories.isEmpty else { if !surfaced.isEmpty { surfaced = [] }; return }
+        let live = liveMemories   // never surface archived (superseded) memories
+        guard !live.isEmpty else { if !surfaced.isEmpty { surfaced = [] }; return }
 
         let now = Date()
         let window = Config.surfaceWindowSeconds
@@ -377,9 +474,35 @@ final class AppState: ObservableObject {
             .map(\.text)
             .joined(separator: " ") + " " + partialText
 
-        let hits = Surfacer.rank(recent: recentText, memories: memories,
+        let hits: [Surfacer.Hit]
+        if Config.semanticSurfaceEnabled, embeddings.isAvailable {
+            let neighbours = embeddings.search(recentText, limit: 20)
+            let semantic = Dictionary(neighbours.map { ($0.id, $0.score) }, uniquingKeysWith: { a, _ in a })
+            hits = Surfacer.rankHybrid(recent: recentText, memories: live, semantic: semantic,
+                                       semanticWeight: Config.semanticWeight, semanticFloor: Config.semanticFloor,
+                                       minScore: Config.surfaceMinScore, limit: Config.surfaceMax)
+        } else {
+            hits = Surfacer.rank(recent: recentText, memories: live,
                                  minScore: Config.surfaceMinScore, limit: Config.surfaceMax)
+        }
         let hitIds = Set(hits.map { $0.memory.id })
+
+        // Reinforcement (plan 02): a memory that *freshly* surfaces (wasn't already showing) gets
+        // a small, capped weight bump. Same-topic talk keeps cards in `surfaced`, so this only
+        // fires on genuine topic shifts — writes are bounded by those, not by the tick rate.
+        if Config.reinforcementEnabled {
+            let prevIds = Set(surfaced.map(\.id))
+            var bumped = false
+            for h in hits where !prevIds.contains(h.memory.id) {
+                if let i = memories.firstIndex(where: { $0.id == h.memory.id }) {
+                    memories[i].hitCount += 1
+                    memories[i].lastSurfaced = now
+                    memories[i].weight = Reinforcement.reinforced(memories[i].weight)
+                    bumped = true
+                }
+            }
+            if bumped { Store.saveMemories(memories) }
+        }
 
         var merged: [SurfacedMemory] = []
         // Carry forward still-fresh cards that didn't re-match this round (let them decay).
@@ -424,7 +547,7 @@ final class AppState: ObservableObject {
         guard !isBriefing, !memories.isEmpty else { return }
         isBriefing = true
         briefingDismissed = false
-        let snapshot = memories, sess = sessions, model = Config.memoryModel
+        let snapshot = liveMemories, sess = sessions, model = Config.memoryModel
         Task {
             do {
                 let text = try await Briefer.generate(memories: snapshot, sessions: sess, model: model)
@@ -463,7 +586,7 @@ final class AppState: ObservableObject {
     }
 
     func importContext(_ source: ContextImporter.Source) {
-        guard !isImporting else { return }
+        guard !isImporting, !isConsolidating, !isDeduping else { return }
         isImporting = true
         statusText = "Importing \(source.label)…"
         let snapshot = memories
@@ -481,8 +604,7 @@ final class AppState: ObservableObject {
                     }
                 }
                 await MainActor.run {
-                    self.memories = out.memories
-                    Store.saveMemories(self.memories)
+                    self.applyMemoryResult(out.memories, base: snapshot)
                     self.isImporting = false
                     self.statusText = "Imported \(label): +\(out.created) new, \(out.updated) updated"
                 }
@@ -497,17 +619,70 @@ final class AppState: ObservableObject {
 
     // MARK: - Spoken answers ("hey Nemo …")
 
+    /// Retrieve the user's own memories most relevant to a spoken question — union of semantic
+    /// neighbours and lexical hits, deduped, archived excluded, capped at `answerMemoryK` (plan 11).
+    private func retrieveForQuestion(_ question: String) -> [Memory] {
+        let k = max(1, Config.answerMemoryK)
+        var ranked: [UUID] = []
+        if Config.semanticSurfaceEnabled, embeddings.isAvailable {
+            ranked = embeddings.search(question, limit: k * 2).map(\.id)
+        }
+        let lexical = Surfacer.rank(recent: question, memories: liveMemories, minScore: 1, limit: k).map(\.memory.id)
+
+        var seen = Set<UUID>(); var result: [Memory] = []
+        for id in ranked + lexical {
+            guard !seen.contains(id), let m = memory(id), !m.superseded else { continue }
+            seen.insert(id); result.append(m)
+            if result.count >= k { break }
+        }
+        return result
+    }
+
+    /// The last little while of speech, for conversational follow-ups in grounded answers.
+    private func recentTranscriptWindow() -> String {
+        let now = Date()
+        return segments
+            .filter { now.timeIntervalSince($0.end) <= Config.surfaceWindowSeconds }
+            .suffix(8).map(\.text).joined(separator: " ")
+    }
+
+    /// Reinforce memories that grounded an answer — being asked about is strong relevance (plan 11/02).
+    private func reinforceUsed(_ ids: [UUID]) {
+        guard Config.reinforcementEnabled, !ids.isEmpty else { return }
+        let now = Date(); var changed = false
+        for id in ids where memories.contains(where: { $0.id == id }) {
+            if let i = memories.firstIndex(where: { $0.id == id }) {
+                memories[i].hitCount += 1
+                memories[i].lastSurfaced = now
+                memories[i].weight = Reinforcement.reinforced(memories[i].weight)
+                changed = true
+            }
+        }
+        if changed { Store.saveMemories(memories) }
+    }
+
     private func answer(_ question: String) {
         guard !answering else { return }
         answering = true
         statusText = "Asking Claude…"
         let model = Config.memoryModel
-        let sys = "You are a friendly voice assistant answering out loud. Reply in one to three short, conversational sentences of plain spoken English — no markdown, lists, or URLs."
+
+        // Retrieval-augmented (plan 11): answer from the user's own memories first.
+        let grounded = Config.memoryGroundedAnswers
+        let retrieved = grounded ? retrieveForQuestion(question) : []
+        let sys = grounded ? MemoryQA.system :
+            "You are a friendly voice assistant answering out loud. Reply in one to three short, conversational sentences of plain spoken English — no markdown, lists, or URLs."
+        let prompt = grounded ? MemoryQA.prompt(question: question, memories: retrieved,
+                                                recent: recentTranscriptWindow()) : question
+        let usedIds = retrieved.map(\.id)
         Task {
             do {
-                let reply = try await AssistantRunner.claudeOneShot(prompt: question, system: sys, model: model)
+                let reply = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys,
+                                                                   model: model, feature: "answer")
                 await MainActor.run {
+                    self.reinforceUsed(usedIds)   // being asked about is a strong relevance signal
                     self.lastAnswer = reply
+                    self.clearAssistantHealth()
                     self.statusText = "Answering aloud…"
                     self.speaker.onFinish = { [weak self] in
                         self?.answering = false
@@ -518,10 +693,172 @@ final class AppState: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.answering = false
+                    if let ae = error as? AssistantError, ae.isHardDown { self.assistantHealth = ae }
                     self.statusText = "Couldn't answer: \(error.localizedDescription)"
                 }
             }
         }
+    }
+
+    /// Apply the result of an async LLM pass (consolidation / maintenance / import) without
+    /// clobbering direct edits the user made to `memories` *during* the pass's await. The pass
+    /// computed `result` from `base` (the snapshot at start); we reconcile by id against the
+    /// current `memories`:
+    ///  - user deleted a memory mid-pass (in base, gone now) → keep it deleted
+    ///  - user edited a memory mid-pass (`userEdited` flipped on) → keep the user's version
+    ///  - a memory added/changed concurrently that the pass never saw → preserve it
+    private func applyMemoryResult(_ result: [Memory], base: [Memory]) {
+        let baseIds = Set(base.map(\.id))
+        let baseEditedIds = Set(base.filter { $0.userEdited }.map(\.id))
+        let current = Dictionary(memories.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        var merged: [Memory] = []
+        var used = Set<UUID>()
+        for m in result {
+            // Honour a delete made during the pass.
+            if baseIds.contains(m.id), current[m.id] == nil { continue }
+            // Honour an edit made during the pass (wasn't user-edited in the base, is now).
+            if let cur = current[m.id], cur.userEdited, !baseEditedIds.contains(m.id) {
+                merged.append(cur)
+            } else {
+                merged.append(m)
+            }
+            used.insert(m.id)
+        }
+        // Preserve memories created concurrently that the pass never saw.
+        for m in memories where !used.contains(m.id) && !baseIds.contains(m.id) {
+            merged.append(m)
+        }
+        memories = merged
+        Store.saveMemories(memories)
+        embeddings.sync(memories)
+    }
+
+    // MARK: - CLI resilience & usage (plans 08 / 09)
+
+    /// A successful CLI call proves the assistant is healthy — clear any banner and reset backoff.
+    private func clearAssistantHealth() {
+        if assistantHealth != nil { assistantHealth = nil }
+        consolidateRetries = 0
+    }
+
+    /// Classify a failed CLI call: surface hard-down states (install/login) as a persistent
+    /// banner, and schedule a backoff retry for transient ones (rate limit / timeout / generic).
+    private func handleAssistantFailure(_ error: Error, context: String,
+                                        retriable: Bool = true, retry: @escaping () -> Void = {}) {
+        guard let ae = error as? AssistantError else {
+            statusText = "\(context) failed: \(error.localizedDescription)"
+            return
+        }
+        statusText = "\(context): \(ae.localizedDescription)"
+        if ae.isHardDown { assistantHealth = ae }
+        guard retriable, ae.isTransient, consolidateRetries < Config.maxRetries else { return }
+
+        // Exponential backoff, honouring a server-provided retry-after when present.
+        var delay = Config.retryBackoffSeconds * pow(2, Double(consolidateRetries))
+        if case .rateLimited(let after?) = ae { delay = max(delay, after) }
+        consolidateRetries += 1
+        let attempt = consolidateRetries
+        statusText = "\(context) will retry (attempt \(attempt)) in \(Int(delay))s…"
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            retry()
+        }
+    }
+
+    /// Append a metered LLM event, trim to the retention window, and persist (metadata only).
+    private func recordUsage(_ event: UsageEvent) {
+        guard Config.usageTrackingEnabled else { return }
+        usage.append(event)
+        let cutoff = Date().addingTimeInterval(-Double(Config.usageRetentionDays) * 86_400)
+        usage.removeAll { $0.at < cutoff }
+        Store.saveUsage(usage)
+    }
+
+    /// Record how many segments the relevance gate kept vs dropped, so the Activity view can show
+    /// what it's saving. Rides on a synthetic (duration-0) usage row, not counted as a CLI call.
+    private func noteGateOutcome(kept: Int, dropped: Int) {
+        guard Config.usageTrackingEnabled, kept + dropped > 0 else { return }
+        recordUsage(UsageEvent(feature: "gate", model: Config.gateModel ?? "default", durationMs: 0,
+                               outcome: "ok", keptSegments: kept, droppedSegments: dropped))
+    }
+
+    /// Usage rolled up over the last `days` (default: today + 6 = 7-day window).
+    func usageRollup(days: Int = 7) -> UsageRollup {
+        let since = Calendar.current.startOfDay(for: Date().addingTimeInterval(-Double(days - 1) * 86_400))
+        return usage.rollup(since: since)
+    }
+
+    // MARK: - Graph maintenance: dedupe + supersede (plans 03 & 04)
+
+    /// Memories that are live (not archived by a supersession).
+    var liveMemories: [Memory] { memories.filter { !$0.superseded } }
+    var archivedMemories: [Memory] { memories.filter { $0.superseded } }
+
+    /// Generate duplicate + contradiction candidates on-device, adjudicate with the cheap model,
+    /// and apply merges/supersessions. No-op while other LLM work is in flight.
+    func maintainNow() {
+        guard Config.dedupeEnabled, !isConsolidating, !isDeduping, !isImporting, memories.count > 1 else { return }
+        let snapshot = memories
+        let cosine: (Int, Int) -> Double? = { i, j in self.embeddings.cosine(snapshot[i].id, snapshot[j].id) }
+        let pairs = Config.contradictionDetectionEnabled
+            ? Consolidator.maintenancePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine)
+            : Consolidator.candidatePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine)
+        guard !pairs.isEmpty else { return }
+
+        isDeduping = true
+        statusText = "Tidying memory…"
+        let model = Config.gateModel
+        Task {
+            do {
+                let out = try await Consolidator.maintain(memories: snapshot, pairs: pairs, model: model)
+                await MainActor.run {
+                    self.applyMemoryResult(out.memories, base: snapshot)
+                    self.isDeduping = false
+                    self.clearAssistantHealth()
+                    if out.updated > 0 { self.statusText = "Tidied memory (\(out.updated) merged/updated)" }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isDeduping = false
+                    self.handleAssistantFailure(error, context: "Tidy", retriable: false)
+                }
+            }
+        }
+    }
+
+    /// Bring an archived memory back (undo a supersession).
+    func restoreMemory(_ id: UUID) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        memories[i].superseded = false
+        memories[i].supersededBy = nil
+        Store.saveMemories(memories)
+        embeddings.sync(memories)
+    }
+
+    // MARK: - Reinforcement decay (plan 02)
+
+    private static let lastDecayKey = "nemo.lastDecay"
+
+    /// Once per day, decay learned weights toward base importance. Pinned memories are exempt.
+    private func maybeDecay() {
+        guard Config.reinforcementEnabled else { return }
+        let last = UserDefaults.standard.object(forKey: Self.lastDecayKey) as? Date
+        if let last, Calendar.current.isDateInToday(last) { return }
+        decayWeights()
+        UserDefaults.standard.set(Date(), forKey: Self.lastDecayKey)
+    }
+
+    private func decayWeights() {
+        let now = Date()
+        let halfLife = Config.decayHalfLifeDays
+        var changed = false
+        for i in memories.indices where !memories[i].pinned && memories[i].weight > 0 {
+            let ref = memories[i].lastSurfaced ?? memories[i].updated
+            let decayed = Reinforcement.decayed(memories[i].weight, lastRef: ref, now: now, halfLifeDays: halfLife)
+            if decayed != memories[i].weight { memories[i].weight = decayed; changed = true }
+        }
+        if changed { Store.saveMemories(memories) }
     }
 
     // MARK: - Editing
@@ -529,7 +866,104 @@ final class AppState: ObservableObject {
     func deleteMemory(_ id: UUID) {
         memories.removeAll { $0.id == id }
         for i in memories.indices { memories[i].links.removeAll { $0 == id } }
+        embeddings.remove(id)
         Store.saveMemories(memories)
+    }
+
+    // MARK: - Memory editing & provenance (plan 05)
+
+    /// Apply a user edit. Marks the memory `userEdited` so consolidation won't clobber the text,
+    /// re-embeds it, and persists. Pass nil for any field to leave it unchanged.
+    func updateMemory(_ id: UUID, title: String? = nil, content: String? = nil, category: String? = nil) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            memories[i].title = title
+        }
+        if let content = content?.trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty {
+            memories[i].content = content
+        }
+        if let category, !category.isEmpty { memories[i].category = Category.match(category).rawValue }
+        memories[i].userEdited = true
+        memories[i].updated = Date()
+        embeddings.sync(memories)
+        Store.saveMemories(memories)
+    }
+
+    func setImportance(_ id: UUID, _ value: Int) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        memories[i].importance = min(5, max(1, value))
+        memories[i].updated = Date()
+        Store.saveMemories(memories)
+    }
+
+    func setPinned(_ id: UUID, _ pinned: Bool) {
+        guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
+        memories[i].pinned = pinned
+        Store.saveMemories(memories)
+    }
+
+    // MARK: - Reminders export (plan 13)
+
+    /// Export a memory to Apple Reminders (parsing a due date from its text if not already set).
+    /// Requests access on first use; dedupes via the stored reminder id.
+    func exportToReminders(_ id: UUID) {
+        guard let mem = memory(id) else { return }
+        Task {
+            let granted = await eventKit.requestRemindersAccess()
+            guard granted else {
+                await MainActor.run { self.statusText = "Reminders access denied" }
+                return
+            }
+            // Resolve (and persist) a due date if we don't have one yet.
+            var m = mem
+            if m.due == nil { m.due = DateExtractor.firstDate(in: m.title + " " + m.content) }
+            do {
+                let rid = try self.eventKit.exportReminder(memory: m, listName: Config.remindersListName)
+                await MainActor.run {
+                    if let i = self.memories.firstIndex(where: { $0.id == id }) {
+                        self.memories[i].exportedReminderId = rid
+                        self.memories[i].due = m.due
+                        Store.saveMemories(self.memories)
+                    }
+                    self.statusText = "Added to Reminders: \(mem.title)"
+                }
+            } catch {
+                await MainActor.run { self.statusText = "Reminders export failed: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    /// After consolidation, optionally push new dated action items to Reminders (opt-in, capped).
+    /// Runs as a single serialized task — one access request, sequential saves — so it can't
+    /// race EKEventStore or create duplicate "Nemo" lists.
+    private func maybeAutoExportTasks() {
+        guard Config.calendarExportEnabled, Config.autoExportTasks else { return }
+        let candidateIds = liveMemories.filter {
+            $0.categoryEnum == .tasks && $0.exportedReminderId == nil
+                && DateExtractor.firstDate(in: $0.title + " " + $0.content) != nil
+        }.prefix(10).map(\.id)
+        guard !candidateIds.isEmpty else { return }
+        let listName = Config.remindersListName
+        Task {
+            guard await eventKit.requestRemindersAccess() else { return }
+            for id in candidateIds {
+                guard var m = self.memory(id) else { continue }
+                if m.due == nil { m.due = DateExtractor.firstDate(in: m.title + " " + m.content) }
+                guard let rid = try? self.eventKit.exportReminder(memory: m, listName: listName) else { continue }
+                if let i = self.memories.firstIndex(where: { $0.id == id }) {
+                    self.memories[i].exportedReminderId = rid
+                    self.memories[i].due = m.due
+                }
+            }
+            Store.saveMemories(self.memories)
+        }
+    }
+
+    /// The transcript segments a memory was distilled from (provenance), oldest first.
+    func sourceSegments(for id: UUID) -> [TranscriptSegment] {
+        guard let mem = memory(id) else { return [] }
+        let ids = Set(mem.sourceSegmentIds)
+        return segments.filter { ids.contains($0.id) }.sorted { $0.start < $1.start }
     }
 
     func toggleMark(_ segmentId: UUID) {
