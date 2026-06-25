@@ -180,7 +180,7 @@ struct StatusFooter: View {
             if let health = state.assistantHealth {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text(health.localizedDescription ?? "Claude CLI unavailable")
+                    Text(health.localizedDescription)
                         .font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.92))
                         .fixedSize(horizontal: false, vertical: true)
                 }

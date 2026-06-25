@@ -337,7 +337,7 @@ final class AppState: ObservableObject {
 
     /// Consolidate all not-yet-processed segments into memory.
     func consolidateNow() {
-        guard !isConsolidating else { return }
+        guard !isConsolidating, !isDeduping, !isImporting else { return }
         let pending = segments.filter { !$0.consolidated }
         guard pending.count >= 1 else { return }
         runConsolidation(of: pending, sessionTitle: inMeeting ? currentSession?.title : nil)
@@ -345,7 +345,7 @@ final class AppState: ObservableObject {
 
     /// Consolidate just one session's segments (used when a meeting ends).
     private func consolidateSession(_ session: Session) {
-        guard !isConsolidating else { return }
+        guard !isConsolidating, !isDeduping, !isImporting else { return }
         let segs = segments.filter { $0.sessionId == session.id && !$0.consolidated }
         guard !segs.isEmpty else { return }
         runConsolidation(of: segs, sessionTitle: session.title, summarize: session.id)
@@ -588,7 +588,7 @@ final class AppState: ObservableObject {
     }
 
     func importContext(_ source: ContextImporter.Source) {
-        guard !isImporting else { return }
+        guard !isImporting, !isConsolidating, !isDeduping else { return }
         isImporting = true
         statusText = "Importing \(source.label)…"
         let snapshot = memories
@@ -767,7 +767,7 @@ final class AppState: ObservableObject {
     /// Generate duplicate + contradiction candidates on-device, adjudicate with the cheap model,
     /// and apply merges/supersessions. No-op while other LLM work is in flight.
     func maintainNow() {
-        guard Config.dedupeEnabled, !isConsolidating, !isDeduping, memories.count > 1 else { return }
+        guard Config.dedupeEnabled, !isConsolidating, !isDeduping, !isImporting, memories.count > 1 else { return }
         let snapshot = memories
         let cosine: (Int, Int) -> Double? = { i, j in self.embeddings.cosine(snapshot[i].id, snapshot[j].id) }
         let pairs = Config.contradictionDetectionEnabled
