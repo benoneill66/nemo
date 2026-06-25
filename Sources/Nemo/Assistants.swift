@@ -127,12 +127,35 @@ enum AssistantRunner {
         resolveBinary(Assistant(name: "Claude", kind: .claude, wake: ["claude"])) == nil ? .notInstalled : nil
     }
 
-    private static func meter(_ feature: String, model: String?, startedAt: Date,
-                              outcome: String, dropped: Int? = nil) {
+    private static func meter(_ feature: String, model: String?, startedAt: Date, outcome: String,
+                              inputTokens: Int? = nil, outputTokens: Int? = nil, estimated: Bool = false) {
         guard let onUsage else { return }
-        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        let ms = max(1, Int(Date().timeIntervalSince(startedAt) * 1000))
         onUsage(UsageEvent(feature: feature, model: model ?? "default", durationMs: ms,
-                           outcome: outcome, droppedSegments: dropped))
+                           inputTokens: inputTokens, outputTokens: outputTokens,
+                           estimated: estimated, outcome: outcome))
+    }
+
+    /// ~4 characters per token — a coarse estimate for text-output calls where the API doesn't
+    /// report usage. Clearly labelled "est." in the UI.
+    static func estimateTokens(_ text: String) -> Int { max(0, text.count / 4) }
+
+    /// Extract input/output token counts from a Claude stream-json line, if it carries `usage`.
+    static func usageTokens(fromLine line: Data) -> (input: Int, output: Int)? {
+        guard !line.isEmpty,
+              let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
+        func usage(_ d: [String: Any]?) -> (Int, Int)? {
+            guard let u = d?["usage"] as? [String: Any] else { return nil }
+            let i = u["input_tokens"] as? Int ?? 0
+            let o = u["output_tokens"] as? Int ?? 0
+            return (i == 0 && o == 0) ? nil : (i, o)
+        }
+        if let event = obj["event"] as? [String: Any] {
+            if let r = usage(event["message"] as? [String: Any]) { return r }   // message_start
+            if let r = usage(event) { return r }                                // message_delta
+        }
+        if let r = usage(obj["result"] as? [String: Any]) { return r }
+        return usage(obj)
     }
 
     static func run(_ a: Assistant, prompt: String,
@@ -172,7 +195,10 @@ enum AssistantRunner {
             meter(feature, model: model, startedAt: startedAt, outcome: outcomeString(for: err))
             throw err
         }
-        meter(feature, model: model, startedAt: startedAt, outcome: "ok")
+        // text output doesn't report usage; estimate from character counts.
+        meter(feature, model: model, startedAt: startedAt, outcome: "ok",
+              inputTokens: estimateTokens(prompt) + estimateTokens(system ?? ""),
+              outputTokens: estimateTokens(answer), estimated: true)
         return answer
     }
 
@@ -223,10 +249,14 @@ enum AssistantRunner {
 
         let startedAt = Date()
         var full = ""
+        var usageIn = 0, usageOut = 0
         let (status, _, errs, timedOut) = try await exec(executable: bin, arguments: args, onLine: { line in
             if let t = textDelta(fromLine: line) {
                 full += t
                 onDelta(t)
+            } else if let u = usageTokens(fromLine: line) {
+                if u.input > 0 { usageIn = u.input }
+                if u.output > 0 { usageOut = u.output }
             } else if isContentBlockStop(fromLine: line) {
                 onDelta("\n") // flush any buffered preamble sentence now
             }
@@ -237,7 +267,12 @@ enum AssistantRunner {
             meter("answer", model: a.model, startedAt: startedAt, outcome: outcomeString(for: err))
             throw err
         }
-        meter("answer", model: a.model, startedAt: startedAt, outcome: "ok")
+        // Prefer real usage from the stream; fall back to an estimate if it wasn't reported.
+        let reported = usageIn > 0 || usageOut > 0
+        meter("answer", model: a.model, startedAt: startedAt, outcome: "ok",
+              inputTokens: reported ? usageIn : estimateTokens(prompt),
+              outputTokens: reported ? usageOut : estimateTokens(answer),
+              estimated: !reported)
         return answer
     }
 

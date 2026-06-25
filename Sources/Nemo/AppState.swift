@@ -316,6 +316,7 @@ final class AppState: ObservableObject {
                         Store.saveSegments(self.segments)
                         self.isConsolidating = false
                         self.clearAssistantHealth()
+                        if useGate { self.noteGateOutcome(kept: 0, dropped: junkIds.count) }
                         self.statusText = "Nothing to remember (\(junkIds.count) dropped)"
                     }
                     return
@@ -342,6 +343,7 @@ final class AppState: ObservableObject {
                     }
                     self.isConsolidating = false
                     self.clearAssistantHealth()
+                    if useGate { self.noteGateOutcome(kept: relevant.count, dropped: junkIds.count) }
                     let dropped = junkIds.isEmpty ? "" : ", \(junkIds.count) dropped"
                     self.statusText = "Memory updated (+\(out.created) new, \(out.updated) refined\(dropped))"
                 }
@@ -595,6 +597,20 @@ final class AppState: ObservableObject {
         let cutoff = Date().addingTimeInterval(-Double(Config.usageRetentionDays) * 86_400)
         usage.removeAll { $0.at < cutoff }
         Store.saveUsage(usage)
+    }
+
+    /// Record how many segments the relevance gate kept vs dropped, so the Activity view can show
+    /// what it's saving. Rides on a synthetic (duration-0) usage row, not counted as a CLI call.
+    private func noteGateOutcome(kept: Int, dropped: Int) {
+        guard Config.usageTrackingEnabled, kept + dropped > 0 else { return }
+        recordUsage(UsageEvent(feature: "gate", model: Config.gateModel ?? "default", durationMs: 0,
+                               outcome: "ok", keptSegments: kept, droppedSegments: dropped))
+    }
+
+    /// Usage rolled up over the last `days` (default: today + 6 = 7-day window).
+    func usageRollup(days: Int = 7) -> UsageRollup {
+        let since = Calendar.current.startOfDay(for: Date().addingTimeInterval(-Double(days - 1) * 86_400))
+        return usage.rollup(since: since)
     }
 
     // MARK: - Editing

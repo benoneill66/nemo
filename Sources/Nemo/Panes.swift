@@ -727,6 +727,121 @@ private struct SessionCard: View {
     }
 }
 
+// MARK: - Activity (LLM usage & cost — plan 09)
+
+struct ActivityPane: View {
+    @EnvironmentObject var state: AppState
+
+    private var today: UsageRollup { state.usageRollup(days: 1) }
+    private var week: UsageRollup { state.usageRollup(days: 7) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PaneHeader(title: "Activity", subtitle: "What Nemo's background AI is doing — metadata only, on-device.")
+
+            HStack(spacing: 12) {
+                RollupCard(title: "Today", rollup: today)
+                RollupCard(title: "Last 7 days", rollup: week)
+            }
+
+            if let rate = week.gateDropRate {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill").foregroundStyle(.green)
+                    Text("Relevance gate dropped \(Int(rate * 100))% of segments")
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                    Text("(\(week.gateKept) kept · \(week.gateDropped) dropped, saving expensive calls)")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .glassCard(cornerRadius: 14, tintHue: 0.4)
+            }
+
+            if !week.byFeature.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("BY FEATURE · 7 DAYS").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+                    ForEach(week.byFeature.sorted { $0.value > $1.value }, id: \.key) { feat, n in
+                        HStack {
+                            Text(feat.capitalized).font(.system(size: 12)).foregroundStyle(.white.opacity(0.85))
+                            Spacer()
+                            Text("\(n) call\(n == 1 ? "" : "s")").font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                }
+                .padding(14).glassCard(cornerRadius: 16, tintHue: 0.6)
+            }
+
+            recentList
+        }
+        .padding(20).glassCard(cornerRadius: 22)
+    }
+
+    private var recentList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("RECENT CALLS").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.45))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(state.usage.filter(\.isCall).suffix(60).reversed()) { e in
+                        HStack(spacing: 8) {
+                            Circle().fill(e.outcome == "ok" ? Color.green.opacity(0.8) : Color.orange.opacity(0.9))
+                                .frame(width: 6, height: 6)
+                            Text(timeFmt.string(from: e.at)).font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.4)).frame(width: 78, alignment: .leading)
+                            Text(e.feature).font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 90, alignment: .leading)
+                            Text("\(e.durationMs) ms").font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+                            Spacer()
+                            if let i = e.inputTokens, let o = e.outputTokens {
+                                Text("\(i)↓ \(o)↑\(e.estimated ? " est" : "")")
+                                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                            }
+                        }
+                        .padding(.vertical, 3).padding(.horizontal, 8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.04)))
+                    }
+                    if state.usage.filter(\.isCall).isEmpty {
+                        Text("No AI activity yet. Memories consolidate as you talk.")
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)).padding(.top, 20)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+}
+
+private struct RollupCard: View {
+    let title: String
+    let rollup: UsageRollup
+
+    private func fmt(_ n: Int) -> String {
+        n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased()).font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+            Text("\(rollup.calls)").font(.system(size: 30, weight: .bold)).foregroundStyle(.white)
+            Text("call\(rollup.calls == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+            Divider().overlay(.white.opacity(0.1))
+            stat("Tokens", "\(fmt(rollup.inputTokens))↓ \(fmt(rollup.outputTokens))↑")
+            stat("Est. cost", String(format: "$%.3f%@", rollup.estimatedCost, rollup.anyEstimated ? " est" : ""))
+            if rollup.failureRate > 0 {
+                stat("Failures", "\(Int(rollup.failureRate * 100))%")
+            }
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(cornerRadius: 16, tintHue: 0.13)
+    }
+
+    private func stat(_ k: String, _ v: String) -> some View {
+        HStack {
+            Text(k).font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+            Spacer()
+            Text(v).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
+        }
+    }
+}
+
 // MARK: - Import
 
 struct ImportPane: View {

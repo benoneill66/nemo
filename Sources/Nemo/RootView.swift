@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Tab: String, CaseIterable, Identifiable {
-    case live = "Live", memory = "Memory", sessions = "Sessions", importing = "Import"
+    case live = "Live", memory = "Memory", sessions = "Sessions", importing = "Import", activity = "Activity"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -9,6 +9,7 @@ enum Tab: String, CaseIterable, Identifiable {
         case .memory: return "brain.head.profile"
         case .sessions: return "calendar"
         case .importing: return "square.and.arrow.down.on.square"
+        case .activity: return "chart.bar.fill"
         }
     }
 }
@@ -80,6 +81,7 @@ struct RootView: View {
         case .memory: MemoryPane()
         case .sessions: SessionsPane()
         case .importing: ImportPane()
+        case .activity: ActivityPane()
         }
     }
 }
