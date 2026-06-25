@@ -31,6 +31,18 @@ struct LivePane: View {
                     .frame(width: 190)
             }
 
+            // Today's morning briefing — open items + recent sessions, distilled on launch.
+            if state.isBriefing && state.briefing == nil {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing your briefing…").font(.system(size: 12)).foregroundStyle(.white.opacity(0.7))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14).glassCard(cornerRadius: 16, tintHue: 0.13)
+            } else if let b = state.briefing, !state.briefingDismissed {
+                BriefingCard(briefing: b)
+            }
+
             // What's being heard right now.
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
@@ -45,6 +57,11 @@ struct LivePane: View {
             }
             .padding(16)
             .glassCard(tintHue: 0.4)
+
+            // Memories relevant to what's being said right now — surfaced automatically.
+            if !state.surfaced.isEmpty {
+                RelevantNowStrip()
+            }
 
             if let answer = state.lastAnswer {
                 HStack(alignment: .top, spacing: 8) {
@@ -92,6 +109,120 @@ private struct SegmentRow: View {
         }
         .padding(.vertical, 7).padding(.horizontal, 10)
         .background(RoundedRectangle(cornerRadius: 10).fill(seg.marked ? Color.yellow.opacity(0.1) : Color.white.opacity(0.04)))
+    }
+}
+
+// MARK: - Morning briefing
+
+private struct BriefingCard: View {
+    @EnvironmentObject var state: AppState
+    let briefing: Briefing
+    private var speaking: Bool { state.speakingBriefing }
+
+    private var stamp: String {
+        let f = DateFormatter()
+        f.dateStyle = Calendar.current.isDateInToday(briefing.generated) ? .none : .medium
+        f.timeStyle = .short
+        let when = f.string(from: briefing.generated)
+        return Calendar.current.isDateInToday(briefing.generated) ? "this morning · \(when)" : when
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sun.horizon.fill").foregroundStyle(.orange)
+                Text("Morning briefing")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                Text(stamp).font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                Spacer()
+                Button { toggleSpeak() } label: {
+                    Image(systemName: speaking ? "stop.circle.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(.white.opacity(0.7))
+                }.buttonStyle(.plain).help(speaking ? "Stop" : "Read aloud")
+                Button { state.generateBriefing() } label: {
+                    Image(systemName: "arrow.clockwise").foregroundStyle(.white.opacity(0.7))
+                }.buttonStyle(.plain).disabled(state.isBriefing).help("Regenerate")
+                Button { state.dismissBriefing() } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5))
+                }.buttonStyle(.plain).help("Dismiss")
+            }
+            Text(briefing.text)
+                .font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(16)
+        .glassCard(cornerRadius: 16, tintHue: 0.11)
+        .onDisappear { if speaking { state.stopSpeaking() } }
+    }
+
+    private func toggleSpeak() {
+        if speaking { state.stopSpeaking() } else { state.speakBriefing() }
+    }
+}
+
+// MARK: - Relevant now (live surfacing)
+
+/// A horizontal strip of memories the relevance engine surfaced for the current moment.
+private struct RelevantNowStrip: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles").foregroundStyle(.cyan)
+                Text("Relevant now")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.75))
+                Text("surfaced as you speak")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(state.surfaced) { item in
+                        SurfacedCard(item: item) { state.dismissSurfaced(item.id) }
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(14)
+        .glassCard(cornerRadius: 16, tintHue: 0.55)
+        .animation(.easeInOut(duration: 0.35), value: state.surfaced.map(\.id))
+    }
+}
+
+private struct SurfacedCard: View {
+    let item: SurfacedMemory
+    let dismiss: () -> Void
+    private var mem: Memory { item.memory }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: mem.categoryEnum.symbol).font(.system(size: 10))
+                    .foregroundStyle(Color(hue: mem.categoryEnum.hue, saturation: 0.6, brightness: 1))
+                Text(mem.category).font(.system(size: 9, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+                Spacer(minLength: 6)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.4))
+                }.buttonStyle(.plain)
+            }
+            Text(mem.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Text(mem.content).font(.system(size: 11)).foregroundStyle(.white.opacity(0.72))
+                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.up.forward").font(.system(size: 8))
+                Text(item.reason).font(.system(size: 9, weight: .medium)).lineLimit(1)
+            }
+            .foregroundStyle(.cyan.opacity(0.85))
+        }
+        .padding(11)
+        .frame(width: 210, height: 132, alignment: .topLeading)
+        .glassCard(cornerRadius: 14, tintHue: mem.categoryEnum.hue)
     }
 }
 

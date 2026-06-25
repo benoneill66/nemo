@@ -33,6 +33,17 @@ and Apple's Speech framework for transcription, so raw audio never leaves your M
   to Claude, which distills durable notes, **categorizes** them (People, Projects, Decisions,
   Action Items, Preferences, Facts, Meetings, Ideas, Open Questions…), and **links** related
   memories into a graph (by reference and by shared entities).
+- **Surfaces what's relevant, as you speak** — the point of a memory is having it at the
+  right moment. An on-device relevance engine watches the rolling transcript and, when a
+  person, project, or topic comes up, instantly surfaces the memories that matter — the open
+  action item, the decision you made last time, that person's preference — in a **Relevant
+  now** strip on the Live tab. No LLM call, so it's instant and free; it's weighted toward
+  actionable categories and fades out as the conversation moves on.
+- **Morning briefing** — when you open Nemo each day it distills your memory into a short,
+  spoken-style catch-up: what's outstanding (open action items, unanswered questions), recent
+  decisions, and what your last sessions were about. It shows as a card on the Live tab (tap
+  to hear it read aloud) and a **Morning Briefing** action in the menu bar. Generated once per
+  day and cached, so reopening is instant.
 - **Captures meetings** — start a session by voice ("start meeting") or a button; everything
   said is grouped, and when it ends Claude writes a summary and folds it into memory.
 - **Mark by keyword** — say "important", "remember this", "action item", "note to self", etc.
@@ -56,11 +67,12 @@ mic ──▶ AVAudioEngine ──▶ SFSpeechRecognizer (on-device, rolling win
    keyword marking      meeting sessions            "hey nemo …"
    (important/…)        (start/end → summary)        → Claude → spoken reply
                                │
-              every ~5 min / on meeting end
-                               │
-                    Claude CLI (memory engine)
-                               │
-        categorized, interconnected memories  ──▶  glassmorphic UI + JSON on disk
+              every ~5 min / on meeting end          per finalized segment
+                               │                              │
+                    Claude CLI (memory engine)      on-device relevance engine
+                               │                              │
+        categorized, interconnected memories  ──┬──▶  glassmorphic UI + JSON on disk
+                                                 └──▶  "Relevant now" surfacing (instant)
 ```
 
 Nothing but distilled text is ever sent anywhere, and only to your own Claude CLI. Raw audio

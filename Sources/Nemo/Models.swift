@@ -93,6 +93,32 @@ struct Memory: Codable, Identifiable, Hashable {
     var categoryEnum: Category { Category.match(category) }
 }
 
+// MARK: - Briefing
+
+/// A short daily catch-up Nemo generates from the memory graph and recent sessions —
+/// open action items, unanswered questions, what happened yesterday, what matters today.
+/// Cached on disk so reopening the app shows today's briefing without regenerating.
+struct Briefing: Codable, Hashable {
+    var text: String
+    var generated: Date
+
+    var isFromToday: Bool { Calendar.current.isDateInToday(generated) }
+}
+
+// MARK: - Surfaced memory
+
+/// A memory the relevance engine has surfaced because it's relevant to what's being said
+/// right now. Lives only in memory (not persisted) and decays out as the conversation moves on.
+struct SurfacedMemory: Identifiable, Hashable {
+    var memory: Memory
+    var score: Double
+    var reason: String
+    var firstSeen: Date          // when it first surfaced this run (drives the "new" pulse)
+    var lastHit: Date            // last time it matched, drives time decay / pruning
+
+    var id: UUID { memory.id }
+}
+
 // MARK: - Session
 
 /// A bounded period of listening. The "ambient" session rolls per day; the user can

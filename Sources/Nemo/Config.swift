@@ -37,6 +37,25 @@ enum Config {
     static var consolidateMinutes: Double { (raw()["consolidateMinutes"] as? Double) ?? 5 }
     static var consolidateMinSegments: Int { (raw()["consolidateMinSegments"] as? Int) ?? 6 }
 
+    /// Real-time surfacing: bring up memories relevant to what's being said, as it's said.
+    /// All on-device, no LLM call. Set "surface": false to disable.
+    static var surfaceEnabled: Bool { (raw()["surface"] as? Bool) ?? true }
+    /// How many seconds of recent speech are considered "the current moment".
+    static var surfaceWindowSeconds: Double { (raw()["surfaceWindowSeconds"] as? Double) ?? 45 }
+    /// How long a surfaced card lingers after its last match before fading out.
+    static var surfaceTTLSeconds: Double { (raw()["surfaceTTLSeconds"] as? Double) ?? 90 }
+    /// Most cards shown at once.
+    static var surfaceMax: Int { (raw()["surfaceMax"] as? Int) ?? 4 }
+    /// Relevance score a memory must clear to surface (higher = stricter).
+    static var surfaceMinScore: Double { (raw()["surfaceMinScore"] as? Double) ?? 3.0 }
+
+    /// Morning briefing: on launch, distill open items + recent sessions into a short daily
+    /// catch-up (once per day, cached). Set "briefing": false to disable.
+    static var briefingEnabled: Bool { (raw()["briefing"] as? Bool) ?? true }
+    /// Read the briefing aloud automatically when it's generated. Off by default — it shows
+    /// as a card you can tap to hear.
+    static var briefingSpeak: Bool { (raw()["briefingSpeak"] as? Bool) ?? false }
+
     /// Model used for memory consolidation / import (kept fast + cheap by default).
     static var memoryModel: String? { (raw()["memoryModel"] as? String) ?? "claude-sonnet-4-6" }
 

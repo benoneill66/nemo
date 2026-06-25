@@ -20,6 +20,11 @@ final class AppState: ObservableObject {
     @Published private(set) var isImporting = false
     @Published private(set) var lastAnswer: String?        // last spoken "hey Nemo" reply
     @Published private(set) var importSources: [ContextImporter.Source] = []
+    @Published private(set) var surfaced: [SurfacedMemory] = []  // relevant-right-now memories
+    @Published private(set) var briefing: Briefing?              // today's morning briefing
+    @Published private(set) var isBriefing = false
+    @Published var briefingDismissed = false                    // hidden for this session
+    @Published private(set) var speakingBriefing = false
 
     private let engine: SpeechEngine = makeSpeechEngine()
     private let speaker = Speaker()
@@ -28,6 +33,7 @@ final class AppState: ObservableObject {
     var engineName: String { engine.displayName }
 
     private var consolidateTimer: Timer?
+    private var surfaceTimer: Timer?
     private var answering = false
 
     private let wakePrefixes = ["hey ", "hey, ", "okay ", "ok ", "hi ", "yo "]
@@ -37,7 +43,9 @@ final class AppState: ObservableObject {
         segments = Store.loadSegments()
         memories = Store.loadMemories()
         sessions = Store.loadSessions()
+        briefing = Store.loadBriefing()
         refreshImportSources()   // walks ~/.claude off the main thread
+        maybeAutoBrief()         // generate today's briefing if we haven't already
 
         engine.onStatus = { [weak self] s in self?.handleStatus(s) }
         engine.onPartial = { [weak self] t in self?.partialText = t }
@@ -72,11 +80,13 @@ final class AppState: ObservableObject {
         ensureAmbientSession()
         engine.start()
         startConsolidateTimer()
+        startSurfaceTimer()
     }
 
     func stop() {
         engine.stop()
         consolidateTimer?.invalidate(); consolidateTimer = nil
+        surfaceTimer?.invalidate(); surfaceTimer = nil
         listening = false
         partialText = ""
         statusText = "Paused"
@@ -118,12 +128,15 @@ final class AppState: ObservableObject {
         Store.saveSegments(segments)
         statusText = seg.marked ? "Marked important" : (inMeeting ? "In meeting — listening" : "Listening")
 
-        // 4. Optional spoken answer to "hey Nemo …".
+        // 4. Surface memories relevant to what was just said.
+        if Config.surfaceEnabled { refreshSurfaced() }
+
+        // 5. Optional spoken answer to "hey Nemo …".
         if Config.wakeAnswerEnabled, let q = wakeQuestion(in: lower, original: text) {
             answer(q)
         }
 
-        // 5. Consolidate when enough has piled up.
+        // 6. Consolidate when enough has piled up.
         if unconsolidatedCount >= Config.consolidateMinSegments { consolidateNow() }
     }
 
@@ -235,6 +248,106 @@ final class AppState: ObservableObject {
             }
         }
     }
+
+    // MARK: - Surfacing relevant memories
+
+    /// Periodically fades out surfaced cards once the conversation has moved past them, even
+    /// when no new speech is arriving, so the strip reflects *now* rather than a while ago.
+    private func startSurfaceTimer() {
+        surfaceTimer?.invalidate()
+        surfaceTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pruneSurfaced() }
+        }
+    }
+
+    /// Re-rank memories against the last little while of speech and merge into the live set:
+    /// refresh anything that re-matched, keep recent matches decaying, drop the stale.
+    private func refreshSurfaced() {
+        guard !memories.isEmpty else { if !surfaced.isEmpty { surfaced = [] }; return }
+
+        let now = Date()
+        let window = Config.surfaceWindowSeconds
+        let recentText = segments
+            .filter { now.timeIntervalSince($0.end) <= window }
+            .suffix(12)
+            .map(\.text)
+            .joined(separator: " ") + " " + partialText
+
+        let hits = Surfacer.rank(recent: recentText, memories: memories,
+                                 minScore: Config.surfaceMinScore, limit: Config.surfaceMax)
+        let hitIds = Set(hits.map { $0.memory.id })
+
+        var merged: [SurfacedMemory] = []
+        // Carry forward still-fresh cards that didn't re-match this round (let them decay).
+        for s in surfaced where !hitIds.contains(s.id)
+            && now.timeIntervalSince(s.lastHit) <= Config.surfaceTTLSeconds {
+            merged.append(s)
+        }
+        // Add / refresh this round's hits, preserving each card's original firstSeen.
+        for h in hits {
+            let firstSeen = surfaced.first { $0.id == h.memory.id }?.firstSeen ?? now
+            merged.append(SurfacedMemory(memory: h.memory, score: h.score, reason: h.reason,
+                                         firstSeen: firstSeen, lastHit: now))
+        }
+
+        surfaced = Array(merged.sorted { $0.lastHit != $1.lastHit ? $0.lastHit > $1.lastHit
+                                                                   : $0.score > $1.score }
+                               .prefix(Config.surfaceMax))
+    }
+
+    /// Drop cards whose last match is older than the time-to-live.
+    private func pruneSurfaced() {
+        guard !surfaced.isEmpty else { return }
+        let cutoff = Date().addingTimeInterval(-Config.surfaceTTLSeconds)
+        let kept = surfaced.filter { $0.lastHit > cutoff }
+        if kept.count != surfaced.count { surfaced = kept }
+    }
+
+    func dismissSurfaced(_ id: UUID) { surfaced.removeAll { $0.id == id } }
+
+    // MARK: - Morning briefing
+
+    /// On launch, generate today's briefing once — if it's enabled, there's something to
+    /// brief on, and we haven't already done one today (cached briefings survive relaunches).
+    private func maybeAutoBrief() {
+        guard Config.briefingEnabled, !memories.isEmpty else { return }
+        if briefing?.isFromToday == true { return }
+        generateBriefing(speak: Config.briefingSpeak)
+    }
+
+    /// Build a fresh briefing from the current memory graph + recent sessions.
+    func generateBriefing(speak: Bool = false) {
+        guard !isBriefing, !memories.isEmpty else { return }
+        isBriefing = true
+        briefingDismissed = false
+        let snapshot = memories, sess = sessions, model = Config.memoryModel
+        Task {
+            do {
+                let text = try await Briefer.generate(memories: snapshot, sessions: sess, model: model)
+                await MainActor.run {
+                    let b = Briefing(text: text, generated: Date())
+                    self.briefing = b
+                    Store.saveBriefing(b)
+                    self.isBriefing = false
+                    if speak { self.speakBriefing() }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isBriefing = false
+                    self.statusText = "Briefing failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func speakBriefing() {
+        guard let text = briefing?.text else { return }
+        speakingBriefing = true
+        speaker.onFinish = { [weak self] in self?.speakingBriefing = false }
+        speaker.speak(text)
+    }
+    func stopSpeaking() { speaker.stop(); speakingBriefing = false }
+    func dismissBriefing() { briefingDismissed = true }
 
     // MARK: - Import outside context
 

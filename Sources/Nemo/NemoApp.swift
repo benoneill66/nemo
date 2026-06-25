@@ -54,6 +54,14 @@ struct MenuBarControl: View {
                         systemImage: "person.3") {
                 state.inMeeting ? state.endMeeting() : state.startMeeting(title: nil)
             }
+            if state.briefing != nil || !state.memories.isEmpty {
+                GlassButton(title: state.isBriefing ? "Briefing…" : "Morning Briefing",
+                            systemImage: "sun.horizon.fill") {
+                    if state.speakingBriefing { state.stopSpeaking() }
+                    else if let b = state.briefing, b.isFromToday { state.speakBriefing() }
+                    else { state.generateBriefing(speak: true) }
+                }.disabled(state.isBriefing || state.memories.isEmpty)
+            }
             GlassButton(title: "Open Nemo", systemImage: "macwindow") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
