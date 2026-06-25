@@ -32,5 +32,9 @@
     <string>Nemo listens continuously so it can transcribe everything it hears and build your memory.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Nemo transcribes your speech on-device to capture and organize what you say.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Nemo can turn your spoken action items into reminders, only when you ask it to.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Nemo can add dated commitments to your calendar, only when you ask it to.</string>
 </dict>
 </plist>

@@ -36,6 +36,7 @@ final class AppState: ObservableObject {
     private let speaker = Speaker()
     private let diarizer = SpeakerDiarizer(threshold: Float(Config.speakerThreshold))
     private let embeddings = EmbeddingIndex()   // on-device semantic index (plans 01, 11)
+    private let eventKit = EventKitExporter()    // Reminders export (plan 13)
 
     /// Which transcription backend is active (shown in the UI).
     var engineName: String { engine.displayName }
@@ -420,6 +421,7 @@ final class AppState: ObservableObject {
                         self.createdSinceDedupe = 0
                         self.maintainNow()
                     }
+                    self.maybeAutoExportTasks()
                 }
             } catch {
                 await MainActor.run {
@@ -869,6 +871,47 @@ final class AppState: ObservableObject {
         guard let i = memories.firstIndex(where: { $0.id == id }) else { return }
         memories[i].pinned = pinned
         Store.saveMemories(memories)
+    }
+
+    // MARK: - Reminders export (plan 13)
+
+    /// Export a memory to Apple Reminders (parsing a due date from its text if not already set).
+    /// Requests access on first use; dedupes via the stored reminder id.
+    func exportToReminders(_ id: UUID) {
+        guard let mem = memory(id) else { return }
+        Task {
+            let granted = await eventKit.requestRemindersAccess()
+            guard granted else {
+                await MainActor.run { self.statusText = "Reminders access denied" }
+                return
+            }
+            // Resolve (and persist) a due date if we don't have one yet.
+            var m = mem
+            if m.due == nil { m.due = DateExtractor.firstDate(in: m.title + " " + m.content) }
+            do {
+                let rid = try self.eventKit.exportReminder(memory: m, listName: Config.remindersListName)
+                await MainActor.run {
+                    if let i = self.memories.firstIndex(where: { $0.id == id }) {
+                        self.memories[i].exportedReminderId = rid
+                        self.memories[i].due = m.due
+                        Store.saveMemories(self.memories)
+                    }
+                    self.statusText = "Added to Reminders: \(mem.title)"
+                }
+            } catch {
+                await MainActor.run { self.statusText = "Reminders export failed: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    /// After consolidation, optionally push new dated action items to Reminders (opt-in, capped).
+    private func maybeAutoExportTasks() {
+        guard Config.calendarExportEnabled, Config.autoExportTasks else { return }
+        let candidates = liveMemories.filter {
+            $0.categoryEnum == .tasks && $0.exportedReminderId == nil
+                && DateExtractor.firstDate(in: $0.title + " " + $0.content) != nil
+        }.prefix(10)
+        for m in candidates { exportToReminders(m.id) }
     }
 
     /// The transcript segments a memory was distilled from (provenance), oldest first.

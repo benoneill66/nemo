@@ -506,6 +506,17 @@ private struct MemoryDetail: View {
 
                 sourceSection
 
+                if Config.calendarExportEnabled && mem.categoryEnum == .tasks && !mem.superseded {
+                    Button {
+                        state.exportToReminders(mem.id)
+                    } label: {
+                        Label(mem.exportedReminderId == nil ? "Add to Reminders" : "Update Reminder",
+                              systemImage: mem.exportedReminderId == nil ? "checklist" : "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.cyan.opacity(0.9))
+                }
+
                 if mem.superseded {
                     HStack(spacing: 8) {
                         Image(systemName: "archivebox.fill").foregroundStyle(.orange)
