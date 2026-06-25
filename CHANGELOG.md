@@ -6,6 +6,11 @@ All notable changes to Nemo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-25
+
+A wave of intelligence, trust, and reach features — all on-device or through your own
+Claude CLI, with no new third-party dependencies.
+
 ### Added
 
 - **Speaker identification (diarization).** Tells apart distinct voices in the transcript
@@ -14,7 +19,55 @@ All notable changes to Nemo are documented here. The format is based on
   (a returning voice re-matches its identity), label each transcript line in the Live and
   Sessions panes, and feed into how memories are attributed. Entirely local — only acoustic
   features are derived, no audio is stored or sent. Tune with `"diarization"` /
-  `"speakerThreshold"` in `config.json`.
+  `"speakerThreshold"`.
+- **Semantic surfacing.** The live "Relevant now" engine now blends on-device sentence
+  embeddings (`NLEmbedding`) with lexical matching, so memories surface on meaning, not just
+  shared words. Still no LLM call — instant and free. Tune with `"semanticSurface"` /
+  `"semanticWeight"` / `"semanticFloor"`.
+- **Morning briefing.** On the first open each day, Nemo distills open action items,
+  unanswered questions, recent decisions, and what your last sessions covered into a short
+  spoken-style catch-up — a card on the Live tab (tap to hear it) and a menu-bar action.
+  Generated once daily and cached. Tune with `"briefing"` / `"briefingSpeak"`.
+- **Memory editing, pinning & provenance.** Edit a memory's title, content, or category
+  inline; pin importance so automation won't override it; and tap any memory to see the exact
+  transcript segments it came from ("why is this here?"). Edits are tracked in a per-memory
+  history.
+- **Memory reinforcement & decay.** Memories that keep coming up are reinforced; stale ones
+  decay over a configurable half-life, so the graph reflects what's currently live. Tune with
+  `"reinforcement"` / `"decayHalfLifeDays"`.
+- **Dedupe pass.** Periodically merges near-duplicate memories (cosine similarity over the
+  embedding index) to keep the graph clean as it grows. Tune with `"dedupe"` /
+  `"dedupeEveryNNew"` / `"dedupeCosine"`.
+- **Contradiction detection & supersede.** New facts that conflict with old ones mark the
+  stale memory as superseded (archived, restorable) rather than silently coexisting. Tune
+  with `"contradictionDetection"`.
+- **Privacy controls.** A one-tap timed private-mode pause (15 min / 1 hour / until resumed)
+  from the menu bar and by voice, automatic pausing when an excluded app is frontmost, and an
+  optional redaction pass that strips secrets before anything is persisted or sent to the LLM.
+  Tune with `"redaction"` / `"excludedApps"` / `"pausePhrases"` / `"resumePhrases"`.
+- **Retrieval-augmented "Hey Nemo".** Spoken questions are now grounded in the most relevant
+  memories retrieved from your graph before being answered, with provenance. Tune with
+  `"memoryGroundedAnswers"` / `"answerMemoryK"`.
+- **Apple Reminders export.** Action items can flow into Apple Reminders via EventKit —
+  manually from a memory's detail view, or automatically. On-device, no network. Tune with
+  `"calendarExport"` / `"autoExportTasks"` / `"remindersListName"`.
+- **Local MCP memory server (`NemoMCP`).** A local [MCP](https://modelcontextprotocol.io)
+  server exposing your memory graph (read-only) to clients like Claude Code and Claude
+  Desktop — `search_memories`, `list_recent`, `list_action_items`, `search_transcript`. No
+  network listener, never touches audio. Tune with `"mcp"` / `"mcpAllowWrite"`.
+- **LLM usage & cost visibility (Activity tab).** A new Activity pane meters every background
+  Claude call — duration, token counts, outcome, by-feature breakdown, and how much the
+  relevance gate is saving. Metadata only; no prompt/response text. Tune with
+  `"usageTracking"` / `"usageRetentionDays"`.
+- **Optional SQLite storage backend.** Set `"storageBackend": "sqlite"` to store memories and
+  segments in an indexed `nemo.db` with full-text transcript search; JSON is migrated in once
+  and kept mirrored as a backup, so you can switch back any time. Defaults to JSON.
+
+### Changed
+
+- **Claude CLI resilience.** The CLI is now a single metered choke point with typed errors, an
+  up-front health probe with an in-app banner when the CLI is unavailable, and automatic
+  retry with backoff for transient failures. Tune with `"maxRetries"` / `"retryBackoffSeconds"`.
 
 ## [1.0.0] — 2026-06-25
 
@@ -40,5 +93,6 @@ First public release.
 - **Packaging.** `build.sh`, `install.sh`, and `package.sh` for a signed `.app` and a
   drag-to-install `.dmg`.
 
-[Unreleased]: https://github.com/benoneill66/nemo/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/benoneill66/nemo/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/benoneill66/nemo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/benoneill66/nemo/releases/tag/v1.0.0
