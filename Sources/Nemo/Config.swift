@@ -99,4 +99,59 @@ enum Config {
     static var voice: String? { raw()["voice"] as? String }
     static var rate: Double? { raw()["rate"] as? Double }
     static var chime: Any? { raw()["chime"] }
+
+    private static func bool(_ key: String, default def: Bool) -> Bool { (raw()[key] as? Bool) ?? def }
+    private static func double(_ key: String, default def: Double) -> Double { (raw()[key] as? Double) ?? def }
+    private static func int(_ key: String, default def: Int) -> Int { (raw()[key] as? Int) ?? def }
+
+    // MARK: - Semantic surfacing (plan 01)
+    /// Blend on-device sentence embeddings into the live relevance engine. Set false → lexical only.
+    static var semanticSurfaceEnabled: Bool { bool("semanticSurface", default: true) }
+    /// How strongly semantic similarity counts relative to lexical hits.
+    static var semanticWeight: Double { double("semanticWeight", default: 4.0) }
+    /// Minimum cosine similarity for a semantic neighbour to count at all.
+    static var semanticFloor: Double { double("semanticFloor", default: 0.30) }
+
+    // MARK: - Reinforcement / decay (plan 02)
+    static var reinforcementEnabled: Bool { bool("reinforcement", default: true) }
+    static var decayHalfLifeDays: Double { double("decayHalfLifeDays", default: 30) }
+
+    // MARK: - Dedup (plan 03)
+    static var dedupeEnabled: Bool { bool("dedupe", default: true) }
+    static var dedupeEveryNNew: Int { int("dedupeEveryNNew", default: 25) }
+    static var dedupeCosine: Double { double("dedupeCosine", default: 0.82) }
+
+    // MARK: - Contradiction detection (plan 04)
+    static var contradictionDetectionEnabled: Bool { bool("contradictionDetection", default: true) }
+
+    // MARK: - Privacy controls (plan 06)
+    static var redactionEnabled: Bool { bool("redaction", default: true) }
+    static var excludedApps: [String] { (raw()["excludedApps"] as? [String]) ?? [] }
+    static var pausePhrases: [String] {
+        strings("pausePhrases", default: ["pause listening", "stop recording", "pause nemo"])
+    }
+    static var resumePhrases: [String] {
+        strings("resumePhrases", default: ["resume listening", "start recording again", "resume nemo"])
+    }
+
+    // MARK: - Usage tracking (plan 09)
+    static var usageTrackingEnabled: Bool { bool("usageTracking", default: true) }
+    static var usageRetentionDays: Int { int("usageRetentionDays", default: 30) }
+
+    // MARK: - CLI resilience (plan 08)
+    static var maxRetries: Int { int("maxRetries", default: 4) }
+    static var retryBackoffSeconds: Double { double("retryBackoffSeconds", default: 30) }
+
+    // MARK: - Retrieval-augmented answers (plan 11)
+    static var memoryGroundedAnswers: Bool { bool("memoryGroundedAnswers", default: true) }
+    static var answerMemoryK: Int { int("answerMemoryK", default: 6) }
+
+    // MARK: - Calendar / Reminders export (plan 13)
+    static var calendarExportEnabled: Bool { bool("calendarExport", default: false) }
+    static var autoExportTasks: Bool { bool("autoExportTasks", default: false) }
+    static var remindersListName: String { (raw()["remindersListName"] as? String) ?? "Nemo" }
+
+    // MARK: - MCP server (plan 12)
+    static var mcpEnabled: Bool { bool("mcp", default: true) }
+    static var mcpAllowWrite: Bool { bool("mcpAllowWrite", default: false) }
 }

@@ -72,6 +72,7 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     var sessionId: UUID? = nil         // owning session (meeting / ambient day)
     var consolidated: Bool = false     // already folded into memory
     var speaker: Int? = nil            // diarization cluster id (0-based); nil = unattributed
+    var redacted: Bool = false         // sensitive content was masked before storage (plan 06)
 }
 
 // MARK: - Speaker
@@ -106,12 +107,34 @@ struct Memory: Codable, Identifiable, Hashable {
     var category: String = Category.misc.rawValue
     var entities: [String] = []
     var links: [UUID] = []
-    var importance: Int = 2            // 1…5, 5 = most important
+    var importance: Int = 2            // 1…5, 5 = most important (user/LLM-set base)
     var source: String = "transcript"  // "transcript" | "import:<assistant>" | "manual"
     var created: Date = Date()
     var updated: Date = Date()
 
+    // Reinforcement / decay (plan 02) — learned usage signal kept separate from `importance`.
+    var hitCount: Int = 0              // times surfaced as relevant
+    var lastSurfaced: Date? = nil      // most recent surfacing
+    var weight: Double = 0             // learned reinforcement, added to importance for ranking
+
+    // Editing, pinning & provenance (plan 05).
+    var pinned: Bool = false           // user-pinned: automation won't decay/override it
+    var userEdited: Bool = false       // user edited the text: dedup/merge won't clobber it
+    var sourceSegmentIds: [UUID] = []  // transcript segments this memory was distilled from
+
+    // Contradiction / supersede (plan 04).
+    var superseded: Bool = false       // archived: a newer memory overrides this fact
+    var supersededBy: UUID? = nil      // the memory that replaced it
+    var history: [String] = []         // short human notes of what changed, newest last
+
+    // Calendar / Reminders export (plan 13).
+    var due: Date? = nil               // parsed due date for action items
+    var exportedReminderId: String? = nil  // EKReminder identifier, if exported
+
     var categoryEnum: Category { Category.match(category) }
+
+    /// Ranking importance = user/LLM base + learned reinforcement, clamped to a sane range.
+    var effectiveImportance: Double { Double(importance) + max(0, weight) }
 }
 
 // MARK: - Briefing
