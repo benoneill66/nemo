@@ -6,14 +6,15 @@ import Foundation
 enum Consolidator {
 
     // What the model returns. Kept lenient so a slightly-off response still parses.
-    private struct Draft: Decodable, Sendable {
+    // `internal` (not private) so the test target can construct drafts and exercise `merge`.
+    struct Draft: Decodable, Sendable {
         var title: String
         var content: String
-        var category: String?
-        var entities: [String]?
-        var related: [String]?      // titles of related memories (existing or new)
-        var importance: Int?
-        var action: String?         // "create" | "update"
+        var category: String? = nil
+        var entities: [String]? = nil
+        var related: [String]? = nil   // titles of related memories (existing or new)
+        var importance: Int? = nil
+        var action: String? = nil      // "create" | "update"
     }
     private struct Payload: Decodable {
         var memories: [Draft]?
@@ -226,7 +227,8 @@ enum Consolidator {
 
     /// Decodes the first JSON object in a model response, tolerating ```json fences and stray
     /// prose around it. Shared by the consolidation parser and the relevance gate.
-    private static func parseJSON<T: Decodable>(_ raw: String) throws -> T {
+    /// `internal` so the test target can exercise the lenient parsing directly.
+    static func parseJSON<T: Decodable>(_ raw: String) throws -> T {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // Strip ```json fences if the model added them despite instructions.
         if s.hasPrefix("```") {
@@ -246,8 +248,8 @@ enum Consolidator {
 
     // MARK: - Merge
 
-    private static func merge(drafts: [Draft], into existing: [Memory],
-                              summary: String?, source: String) -> Output {
+    static func merge(drafts: [Draft], into existing: [Memory],
+                      summary: String?, source: String) -> Output {
         var memories = existing
         var byTitle: [String: Int] = [:]   // lowercased title -> index
         for (i, m) in memories.enumerated() { byTitle[m.title.lowercased()] = i }
