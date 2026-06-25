@@ -154,4 +154,9 @@ enum Config {
     // MARK: - MCP server (plan 12)
     static var mcpEnabled: Bool { bool("mcp", default: true) }
     static var mcpAllowWrite: Bool { bool("mcpAllowWrite", default: false) }
+
+    // MARK: - Storage backend (plan 10)
+    /// "json" (default) or "sqlite". In sqlite mode, memories + segments are stored in nemo.db
+    /// (indexed, FTS) and also mirrored to JSON as a backup for easy rollback.
+    static var storageBackend: String { ((raw()["storageBackend"] as? String) ?? "json").lowercased() }
 }

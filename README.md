@@ -197,8 +197,13 @@ Everything is plain JSON under `~/.config/nemo/data/`:
 | `speakers.json` | learned voice fingerprints (acoustic features only) |
 | `embeddings.json` | on-device semantic vectors per memory (cache; safe to delete) |
 | `usage.json` | metered LLM activity — metadata only, no prompt/response text |
+| `nemo.db` | SQLite store for memories + segments (only when `storageBackend: "sqlite"`) |
 
 Delete a file to reset that part; the app rebuilds from there.
+
+Storage defaults to JSON. Set `"storageBackend": "sqlite"` in `config.json` to use an indexed
+SQLite store (with full-text transcript search) for memories and segments; JSON is migrated in
+once and kept mirrored as a backup, so you can switch back any time.
 
 ## Use your memory from other AI tools (MCP)
 

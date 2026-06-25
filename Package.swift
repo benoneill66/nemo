@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Nemo",
-            path: "Sources/Nemo"
+            path: "Sources/Nemo",
+            linkerSettings: [.linkedLibrary("sqlite3")]   // system libsqlite3 (plan 10)
         ),
         .executableTarget(
             name: "NemoMCP",
