@@ -19,6 +19,7 @@ final class AppState: ObservableObject {
     @Published private(set) var partialText = ""           // what's being heard right now
     @Published private(set) var isConsolidating = false
     @Published private(set) var isImporting = false
+    @Published private(set) var isDeduping = false           // graph maintenance in flight (plan 03)
     @Published private(set) var lastAnswer: String?        // last spoken "hey Nemo" reply
     @Published private(set) var importSources: [ContextImporter.Source] = []
     @Published private(set) var surfaced: [SurfacedMemory] = []  // relevant-right-now memories
@@ -41,6 +42,7 @@ final class AppState: ObservableObject {
     private var surfaceTimer: Timer?
     private var answering = false
     private var consolidateRetries = 0   // backoff counter for transient CLI failures (plan 08)
+    private var createdSinceDedupe = 0    // new memories since the last dedupe pass (plan 03)
 
     private let wakePrefixes = ["hey ", "hey, ", "okay ", "ok ", "hi ", "yo "]
 
@@ -348,6 +350,12 @@ final class AppState: ObservableObject {
                     if useGate { self.noteGateOutcome(kept: relevant.count, dropped: junkIds.count) }
                     let dropped = junkIds.isEmpty ? "" : ", \(junkIds.count) dropped"
                     self.statusText = "Memory updated (+\(out.created) new, \(out.updated) refined\(dropped))"
+                    // Periodically tidy the graph once enough new memories have accumulated.
+                    self.createdSinceDedupe += out.created
+                    if Config.dedupeEnabled, self.createdSinceDedupe >= Config.dedupeEveryNNew {
+                        self.createdSinceDedupe = 0
+                        self.dedupeNow()
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -630,6 +638,43 @@ final class AppState: ObservableObject {
     func usageRollup(days: Int = 7) -> UsageRollup {
         let since = Calendar.current.startOfDay(for: Date().addingTimeInterval(-Double(days - 1) * 86_400))
         return usage.rollup(since: since)
+    }
+
+    // MARK: - Graph maintenance: dedupe (plan 03)
+
+    /// Generate duplicate candidates on-device, adjudicate them with the cheap model, and merge.
+    /// No-op while other LLM work is in flight or there's nothing to compare.
+    func dedupeNow() {
+        guard Config.dedupeEnabled, !isConsolidating, !isDeduping, memories.count > 1 else { return }
+        let snapshot = memories
+        let pairs = Consolidator.candidatePairs(snapshot,
+            cosine: { i, j in self.embeddings.cosine(snapshot[i].id, snapshot[j].id) },
+            cosineThreshold: Config.dedupeCosine)
+        guard !pairs.isEmpty else { return }
+
+        isDeduping = true
+        statusText = "Tidying memory…"
+        let model = Config.gateModel
+        Task {
+            do {
+                let out = try await Consolidator.dedupe(memories: snapshot, pairs: pairs, model: model)
+                await MainActor.run {
+                    self.memories = out.memories
+                    Store.saveMemories(self.memories)
+                    self.embeddings.sync(self.memories)
+                    self.isDeduping = false
+                    self.clearAssistantHealth()
+                    if out.updated > 0 {
+                        self.statusText = "Merged \(out.updated) duplicate memor\(out.updated == 1 ? "y" : "ies")"
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isDeduping = false
+                    self.handleAssistantFailure(error, context: "Tidy", retry: {})
+                }
+            }
+        }
     }
 
     // MARK: - Reinforcement decay (plan 02)

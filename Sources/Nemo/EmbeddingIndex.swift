@@ -53,6 +53,12 @@ final class EmbeddingIndex {
     /// Eagerly drop a memory's vector (e.g. on delete) so it can't surface before the next sync.
     func remove(_ id: UUID) { vectors[id] = nil; hashes[id] = nil }
 
+    /// Cosine similarity between two indexed memories, or nil if either isn't embedded (plan 03).
+    func cosine(_ a: UUID, _ b: UUID) -> Double? {
+        guard let va = vectors[a], let vb = vectors[b], va.count == vb.count else { return nil }
+        return Self.dot(va, vb)   // vectors are unit-normalized → dot == cosine
+    }
+
     /// Top-k memory ids by cosine similarity to `query`, highest first. Scores in [-1, 1].
     func search(_ query: String, limit: Int) -> [(id: UUID, score: Double)] {
         guard limit > 0, !vectors.isEmpty, let q = vector(for: query) else { return [] }
