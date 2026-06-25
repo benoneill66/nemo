@@ -172,7 +172,10 @@ enum Consolidator {
         let transcript = segments.map { seg -> String in
             let mark = seg.marked ? " [IMPORTANT\(seg.markers.isEmpty ? "" : ": \(seg.markers.joined(separator: ", "))")]" : ""
             let who = seg.speaker.flatMap { speakerNames[$0] }.map { "\($0): " } ?? ""
-            return "(\(fmt.string(from: seg.start)))\(mark) \(who)\(seg.text)"
+            // Defensive redaction (plan 06): segments are scrubbed at ingest, but belt-and-braces
+            // before the text leaves the device for the LLM.
+            let body = Config.redactionEnabled ? Redactor.scrub(seg.text).clean : seg.text
+            return "(\(fmt.string(from: seg.start)))\(mark) \(who)\(body)"
         }.joined(separator: "\n")
 
         // Give the model the existing memory titles so it can update/link rather than

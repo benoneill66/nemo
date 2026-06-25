@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 /// The brain of the always-listening assistant. Owns the transcription engine, applies
 /// keyword marking + session routing to each segment, persists everything, periodically
@@ -29,6 +30,7 @@ final class AppState: ObservableObject {
     @Published private(set) var speakingBriefing = false
     @Published private(set) var assistantHealth: AssistantError? // nil = CLI healthy (plan 08)
     @Published private(set) var usage: [UsageEvent] = []         // metered LLM activity (plan 09)
+    @Published private(set) var pausedUntil: Date?              // timed private-mode pause (plan 06)
 
     private let engine: SpeechEngine = makeSpeechEngine()
     private let speaker = Speaker()
@@ -43,6 +45,8 @@ final class AppState: ObservableObject {
     private var answering = false
     private var consolidateRetries = 0   // backoff counter for transient CLI failures (plan 08)
     private var createdSinceDedupe = 0    // new memories since the last dedupe pass (plan 03)
+    private var pauseTimer: Timer?        // auto-resume after a timed pause (plan 06)
+    private var autoPausedForApp = false  // paused because a sensitive app came to front (plan 06)
 
     private let wakePrefixes = ["hey ", "hey, ", "okay ", "ok ", "hi ", "yo "]
 
@@ -61,6 +65,7 @@ final class AppState: ObservableObject {
         AssistantRunner.onUsage = { [weak self] event in
             Task { @MainActor in self?.recordUsage(event) }
         }
+        setupAppExclusionObserver()   // auto-pause near sensitive apps (plan 06)
         refreshImportSources()   // walks ~/.claude off the main thread
         maybeDecay()             // relax stale reinforcement weights, once per day
         maybeAutoBrief()         // generate today's briefing if we haven't already
@@ -113,6 +118,51 @@ final class AppState: ObservableObject {
         statusText = "Paused"
     }
 
+    // MARK: - Privacy: pause & app exclusion (plan 06)
+
+    /// Temporarily stop listening (private mode), auto-resuming after `seconds`.
+    func pause(for seconds: TimeInterval) {
+        guard listening else { return }
+        stop()
+        pausedUntil = Date().addingTimeInterval(seconds)
+        statusText = "Paused (private mode)"
+        pauseTimer?.invalidate()
+        pauseTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.resumeFromPause() }
+        }
+    }
+
+    /// Resume from a timed or app-triggered pause.
+    func resumeFromPause() {
+        pauseTimer?.invalidate(); pauseTimer = nil
+        pausedUntil = nil
+        autoPausedForApp = false
+        start()
+    }
+
+    var isPaused: Bool { pausedUntil != nil || autoPausedForApp }
+
+    private func setupAppExclusionObserver() {
+        guard !Config.excludedApps.isEmpty else { return }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let bundle = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            Task { @MainActor in self?.handleFrontmostApp(bundle) }
+        }
+    }
+
+    private func handleFrontmostApp(_ bundle: String?) {
+        let excluded = bundle.map { Config.excludedApps.contains($0) } ?? false
+        if excluded, listening {
+            stop()
+            autoPausedForApp = true
+            statusText = "Paused — sensitive app in focus"
+        } else if !excluded, autoPausedForApp {
+            resumeFromPause()
+        }
+    }
+
     private func handleStatus(_ s: SpeechEngineStatus) {
         switch s {
         case .listening:
@@ -131,11 +181,25 @@ final class AppState: ObservableObject {
     private func ingest(text: String, start: Date, end: Date, voice: VoiceFingerprint? = nil) {
         var seg = TranscriptSegment(text: text, start: start, end: end)
 
-        // 0. Attribute the segment to a speaker by clustering its voice fingerprint.
+        // 0a. Spoken pause control (plan 06): drop the triggering segment entirely so any sensitive
+        //     lead-in isn't captured, and stop listening for a while.
+        let rawLower = text.lowercased()
+        if Config.pausePhrases.contains(where: { rawLower.contains($0) }) {
+            pause(for: 30 * 60)
+            return
+        }
+
+        // 0b. Redact obviously-sensitive content before anything is stored or sent to the LLM.
+        if Config.redactionEnabled {
+            let (clean, did) = Redactor.scrub(text)
+            if did { seg.text = clean; seg.redacted = true }
+        }
+
+        // 1. Attribute the segment to a speaker by clustering its voice fingerprint.
         if let voice { seg.speaker = attributeSpeaker(voice) }
 
-        // 1. Keyword marking.
-        let lower = text.lowercased()
+        // 2. Keyword marking (on the post-redaction text).
+        let lower = seg.text.lowercased()
         let hits = Config.markers.filter { lower.contains($0) }
         if !hits.isEmpty { seg.marked = true; seg.markers = hits }
 
@@ -156,7 +220,7 @@ final class AppState: ObservableObject {
         if Config.surfaceEnabled { refreshSurfaced() }
 
         // 5. Optional spoken answer to "hey Nemo …".
-        if Config.wakeAnswerEnabled, let q = wakeQuestion(in: lower, original: text) {
+        if Config.wakeAnswerEnabled, let q = wakeQuestion(in: lower, original: seg.text) {
             answer(q)
         }
 

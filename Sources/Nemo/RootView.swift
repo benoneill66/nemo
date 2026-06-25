@@ -57,6 +57,8 @@ struct RootView: View {
                 state.inMeeting ? state.endMeeting() : state.startMeeting(title: nil)
             }
 
+            PauseControl()
+
             VStack(spacing: 4) {
                 ForEach(Tab.allCases) { t in
                     NavRow(tab: t, selected: tab == t,
@@ -113,6 +115,38 @@ private struct NavRow: View {
             .foregroundStyle(.white.opacity(selected ? 1 : 0.72))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Timed private-mode pause (plan 06): a quick menu of durations, or resume when paused.
+struct PauseControl: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        if state.isPaused {
+            GlassButton(title: resumeTitle, systemImage: "play.fill") { state.resumeFromPause() }
+        } else if state.listening {
+            Menu {
+                Button("Pause 15 minutes") { state.pause(for: 15 * 60) }
+                Button("Pause 1 hour") { state.pause(for: 60 * 60) }
+                Button("Pause until I resume") { state.pause(for: 8 * 60 * 60) }
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .menuStyle(.borderlessButton)
+            .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.08)))
+            .foregroundStyle(.white.opacity(0.85))
+        }
+    }
+
+    private var resumeTitle: String {
+        if let until = state.pausedUntil {
+            let mins = max(0, Int(until.timeIntervalSinceNow / 60))
+            return "Resume (paused \(mins)m left)"
+        }
+        return "Resume"
     }
 }
 
