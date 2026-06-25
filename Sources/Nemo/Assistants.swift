@@ -1,5 +1,62 @@
 import Foundation
 
+/// Why a Claude CLI invocation failed, classified so the UI can guide the user and the
+/// orchestrator can decide whether to retry (plan 08).
+enum AssistantError: LocalizedError {
+    case notInstalled
+    case notAuthenticated
+    case rateLimited(retryAfter: TimeInterval?)
+    case timedOut
+    case emptyOutput
+    case failed(status: Int32, stderr: String)
+
+    /// Transient errors are worth retrying with backoff; the rest need user action or are terminal.
+    var isTransient: Bool {
+        switch self {
+        case .rateLimited, .timedOut, .failed: return true
+        case .notInstalled, .notAuthenticated, .emptyOutput: return false
+        }
+    }
+
+    /// True when the CLI is unusable until the user acts (install / log in) — pause background work.
+    var isHardDown: Bool {
+        switch self { case .notInstalled, .notAuthenticated: return true; default: return false }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .notInstalled:     return "Couldn't find the Claude CLI. Install it or set \"command\" in config.json."
+        case .notAuthenticated: return "Claude CLI isn't logged in. Run `claude login` in Terminal."
+        case .rateLimited:      return "Claude usage limit reached — will retry shortly."
+        case .timedOut:         return "Claude timed out."
+        case .emptyOutput:      return "Claude returned no output."
+        case .failed(let s, let e): return e.isEmpty ? "Claude exited with code \(s)." : e
+        }
+    }
+
+    /// Classify a finished process from its exit status, stderr, and whether our watchdog killed it.
+    static func classify(status: Int32, stderr: String, timedOut: Bool) -> AssistantError {
+        if timedOut { return .timedOut }
+        let e = stderr.lowercased()
+        if e.contains("not logged in") || e.contains("please run") && e.contains("login")
+            || e.contains("unauthorized") || e.contains("authenticate") || e.contains("401") {
+            return .notAuthenticated
+        }
+        if e.contains("rate limit") || e.contains("rate-limit") || e.contains("429")
+            || e.contains("overloaded") || e.contains("usage limit") {
+            return .rateLimited(retryAfter: retryAfter(in: stderr))
+        }
+        return .failed(status: status, stderr: stderr)
+    }
+
+    private static func retryAfter(in s: String) -> TimeInterval? {
+        // Look for "retry-after: 30" / "retry after 30s".
+        guard let r = s.range(of: #"retry[- ]after[:\s]+(\d+)"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
+        let digits = s[r].filter(\.isNumber)
+        return Double(digits)
+    }
+}
+
 /// One configurable assistant: a wake word that routes to a particular CLI backend.
 struct Assistant {
     enum Kind: String { case claude, codex, gemini }
@@ -60,6 +117,24 @@ enum Settings {
 enum AssistantRunner {
     private static var home: String { NSHomeDirectory() }
 
+    /// Single choke point for usage metering (plan 09). `AppState` installs a sink; every metered
+    /// CLI call reports one event. Metadata only — never prompt/response text.
+    nonisolated(unsafe) static var onUsage: (@Sendable (UsageEvent) -> Void)?
+
+    /// Fast health probe: is the Claude CLI installed? Returns nil when healthy, else the reason.
+    /// (A cheap binary-resolution check; a full `--version` round-trip is avoided to stay instant.)
+    static func health() -> AssistantError? {
+        resolveBinary(Assistant(name: "Claude", kind: .claude, wake: ["claude"])) == nil ? .notInstalled : nil
+    }
+
+    private static func meter(_ feature: String, model: String?, startedAt: Date,
+                              outcome: String, dropped: Int? = nil) {
+        guard let onUsage else { return }
+        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        onUsage(UsageEvent(feature: feature, model: model ?? "default", durationMs: ms,
+                           outcome: outcome, droppedSegments: dropped))
+    }
+
     static func run(_ a: Assistant, prompt: String,
                     onDelta: @escaping (String) -> Void) async throws -> String {
         guard let bin = resolveBinary(a) else {
@@ -76,10 +151,12 @@ enum AssistantRunner {
     /// Used by the memory consolidator and context importer (not the spoken flow).
     /// `system` overrides the system prompt; pass nil for none.
     static func claudeOneShot(prompt: String, system: String?, model: String? = nil,
-                              timeout: TimeInterval = 240) async throws -> String {
+                              feature: String = "other", timeout: TimeInterval = 240) async throws -> String {
+        let startedAt = Date()
         let probe = Assistant(name: "Claude", kind: .claude, wake: ["claude"], model: model)
         guard let bin = resolveBinary(probe) else {
-            throw mkErr("Couldn't find the Claude CLI. Install it or set \"command\" in config.json.")
+            meter(feature, model: model, startedAt: startedAt, outcome: "failed")
+            throw AssistantError.notInstalled
         }
         var args = ["-p", prompt,
                     "--output-format", "text",
@@ -87,12 +164,24 @@ enum AssistantRunner {
                     "--permission-mode", "bypassPermissions"]
         if let system { args += ["--system-prompt", system] }
         if let model { args += ["--model", model] }
-        let (status, out, errs) = try await exec(executable: bin, arguments: args, onLine: nil, timeout: timeout)
+        let (status, out, errs, timedOut) = try await exec(executable: bin, arguments: args, onLine: nil, timeout: timeout)
         let answer = out.trimmingCharacters(in: .whitespacesAndNewlines)
         if answer.isEmpty {
-            throw mkErr(status != 0 && !errs.isEmpty ? errs : "Claude returned no output.")
+            let err: AssistantError = (status == 0 && !timedOut) ? .emptyOutput
+                                    : .classify(status: status, stderr: errs, timedOut: timedOut)
+            meter(feature, model: model, startedAt: startedAt, outcome: outcomeString(for: err))
+            throw err
         }
+        meter(feature, model: model, startedAt: startedAt, outcome: "ok")
         return answer
+    }
+
+    static func outcomeString(for err: AssistantError) -> String {
+        switch err {
+        case .rateLimited: return "rate_limited"
+        case .timedOut:    return "timeout"
+        default:           return "failed"
+        }
     }
 
     // MARK: Backends
@@ -132,8 +221,9 @@ enum AssistantRunner {
         ]
         if let m = a.model { args += ["--model", m] }
 
+        let startedAt = Date()
         var full = ""
-        let (status, _, errs) = try await exec(executable: bin, arguments: args, onLine: { line in
+        let (status, _, errs, timedOut) = try await exec(executable: bin, arguments: args, onLine: { line in
             if let t = textDelta(fromLine: line) {
                 full += t
                 onDelta(t)
@@ -143,15 +233,18 @@ enum AssistantRunner {
         })
         let answer = full.trimmingCharacters(in: .whitespacesAndNewlines)
         if status != 0 && answer.isEmpty {
-            throw mkErr(errs.isEmpty ? "Claude exited with code \(status)." : errs)
+            let err = AssistantError.classify(status: status, stderr: errs, timedOut: timedOut)
+            meter("answer", model: a.model, startedAt: startedAt, outcome: outcomeString(for: err))
+            throw err
         }
+        meter("answer", model: a.model, startedAt: startedAt, outcome: "ok")
         return answer
     }
 
     private static func runGemini(_ bin: String, _ a: Assistant, _ prompt: String) async throws -> String {
         var args = ["-p", spokenPrompt(prompt), "-y"]
         if let m = a.model { args += ["-m", m] }
-        let (status, out, errs) = try await exec(executable: bin, arguments: args, onLine: nil)
+        let (status, out, errs, _) = try await exec(executable: bin, arguments: args, onLine: nil)
         let answer = out.trimmingCharacters(in: .whitespacesAndNewlines)
         if answer.isEmpty {
             throw mkErr(status != 0 && !errs.isEmpty ? errs : "Gemini gave no answer.")
@@ -168,7 +261,7 @@ enum AssistantRunner {
             "-o", tmp, "--color", "never"
         ]
         if let m = a.model { args += ["-m", m] }
-        let (status, _, errs) = try await exec(executable: bin, arguments: args, onLine: nil)
+        let (status, _, errs, _) = try await exec(executable: bin, arguments: args, onLine: nil)
         let answer = (try? String(contentsOfFile: tmp, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         try? FileManager.default.removeItem(atPath: tmp)
@@ -184,7 +277,7 @@ enum AssistantRunner {
     /// line-by-line (for streaming); stdout and stderr are also returned in full.
     private static func exec(executable: String, arguments: [String],
                              onLine: ((Data) -> Void)?,
-                             timeout: TimeInterval = 120) async throws -> (Int32, String, String) {
+                             timeout: TimeInterval = 120) async throws -> (Int32, String, String, Bool) {
         try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let p = Process()
@@ -228,9 +321,13 @@ enum AssistantRunner {
 
                 let errData = errp.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit(); timer.cancel()
+                // Our watchdog is the only thing that signals the process, so a signal
+                // termination means we timed out (vs. a normal exit code).
+                let timedOut = (p.terminationReason == .uncaughtSignal)
                 cont.resume(returning: (p.terminationStatus,
                                         String(data: full, encoding: .utf8) ?? "",
-                                        String(data: errData, encoding: .utf8) ?? ""))
+                                        String(data: errData, encoding: .utf8) ?? "",
+                                        timedOut))
             }
         }
     }

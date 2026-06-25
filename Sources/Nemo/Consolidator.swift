@@ -66,7 +66,8 @@ enum Consolidator {
                                  sessionTitle: sessionTitle, importedFrom: importedFrom,
                                  speakerNames: speakerNames)
         let sys = importedFrom == nil ? system : importSystem
-        let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys, model: model)
+        let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys, model: model,
+                                                          feature: importedFrom == nil ? "consolidate" : "import")
         let payload = try parse(raw)
         let source = importedFrom.map { "import:\($0)" } ?? "transcript"
         // Provenance (plan 05): live transcript segments are traceable; imports aren't.
@@ -104,7 +105,8 @@ enum Consolidator {
                     do {
                         let prompt = buildPrompt(segments: segs, existing: existing,
                                                  sessionTitle: nil, importedFrom: importedFrom)
-                        let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys, model: model)
+                        let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: sys, model: model,
+                                                                          feature: "import")
                         let payload = try parse(raw)
                         return (i, payload.memories ?? [], payload.summary)
                     } catch {
@@ -150,7 +152,8 @@ enum Consolidator {
         {"relevant": [0, 2]}
         If nothing is worth remembering, return {"relevant": []}.
         """
-        let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: gateSystem, model: model)
+        let raw = try await AssistantRunner.claudeOneShot(prompt: prompt, system: gateSystem, model: model,
+                                                          feature: "gate")
         let payload: GatePayload = try parseJSON(raw)
         let valid = (payload.relevant ?? []).filter { $0 >= 0 && $0 < segments.count }
         var keep = Set(valid)

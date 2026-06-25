@@ -141,6 +141,16 @@ struct StatusFooter: View {
     @EnvironmentObject var state: AppState
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let health = state.assistantHealth {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(health.localizedDescription ?? "Claude CLI unavailable")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.92))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.18)))
+            }
             if state.isConsolidating || state.isImporting {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

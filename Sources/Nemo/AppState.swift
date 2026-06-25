@@ -26,6 +26,8 @@ final class AppState: ObservableObject {
     @Published private(set) var isBriefing = false
     @Published var briefingDismissed = false                    // hidden for this session
     @Published private(set) var speakingBriefing = false
+    @Published private(set) var assistantHealth: AssistantError? // nil = CLI healthy (plan 08)
+    @Published private(set) var usage: [UsageEvent] = []         // metered LLM activity (plan 09)
 
     private let engine: SpeechEngine = makeSpeechEngine()
     private let speaker = Speaker()
@@ -38,6 +40,7 @@ final class AppState: ObservableObject {
     private var consolidateTimer: Timer?
     private var surfaceTimer: Timer?
     private var answering = false
+    private var consolidateRetries = 0   // backoff counter for transient CLI failures (plan 08)
 
     private let wakePrefixes = ["hey ", "hey, ", "okay ", "ok ", "hi ", "yo "]
 
@@ -50,6 +53,12 @@ final class AppState: ObservableObject {
         briefing = Store.loadBriefing()
         // Restore learned voices so returning speakers keep their identity (and name).
         diarizer.seed(speakers.map { (id: $0.id, centroid: $0.centroid, count: $0.count) })
+        usage = Store.loadUsage()
+        assistantHealth = AssistantRunner.health()   // probe CLI availability up front
+        // Meter every Claude CLI call into the usage log (plans 08/09). Metadata only.
+        AssistantRunner.onUsage = { [weak self] event in
+            Task { @MainActor in self?.recordUsage(event) }
+        }
         refreshImportSources()   // walks ~/.claude off the main thread
         maybeAutoBrief()         // generate today's briefing if we haven't already
         // Build the semantic index after init returns, so it doesn't block launch.
@@ -306,6 +315,7 @@ final class AppState: ObservableObject {
                         self.pruneConsolidatedTranscript()
                         Store.saveSegments(self.segments)
                         self.isConsolidating = false
+                        self.clearAssistantHealth()
                         self.statusText = "Nothing to remember (\(junkIds.count) dropped)"
                     }
                     return
@@ -331,13 +341,15 @@ final class AppState: ObservableObject {
                         Store.saveSessions(self.sessions)
                     }
                     self.isConsolidating = false
+                    self.clearAssistantHealth()
                     let dropped = junkIds.isEmpty ? "" : ", \(junkIds.count) dropped"
                     self.statusText = "Memory updated (+\(out.created) new, \(out.updated) refined\(dropped))"
                 }
             } catch {
                 await MainActor.run {
                     self.isConsolidating = false
-                    self.statusText = "Consolidation failed: \(error.localizedDescription)"
+                    self.handleAssistantFailure(error, context: "Consolidation",
+                                                retry: { [weak self] in self?.consolidateNow() })
                 }
             }
         }
@@ -523,9 +535,11 @@ final class AppState: ObservableObject {
         let sys = "You are a friendly voice assistant answering out loud. Reply in one to three short, conversational sentences of plain spoken English — no markdown, lists, or URLs."
         Task {
             do {
-                let reply = try await AssistantRunner.claudeOneShot(prompt: question, system: sys, model: model)
+                let reply = try await AssistantRunner.claudeOneShot(prompt: question, system: sys,
+                                                                   model: model, feature: "answer")
                 await MainActor.run {
                     self.lastAnswer = reply
+                    self.clearAssistantHealth()
                     self.statusText = "Answering aloud…"
                     self.speaker.onFinish = { [weak self] in
                         self?.answering = false
@@ -536,10 +550,51 @@ final class AppState: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.answering = false
+                    if let ae = error as? AssistantError, ae.isHardDown { self.assistantHealth = ae }
                     self.statusText = "Couldn't answer: \(error.localizedDescription)"
                 }
             }
         }
+    }
+
+    // MARK: - CLI resilience & usage (plans 08 / 09)
+
+    /// A successful CLI call proves the assistant is healthy — clear any banner and reset backoff.
+    private func clearAssistantHealth() {
+        if assistantHealth != nil { assistantHealth = nil }
+        consolidateRetries = 0
+    }
+
+    /// Classify a failed CLI call: surface hard-down states (install/login) as a persistent
+    /// banner, and schedule a backoff retry for transient ones (rate limit / timeout / generic).
+    private func handleAssistantFailure(_ error: Error, context: String, retry: @escaping () -> Void) {
+        guard let ae = error as? AssistantError else {
+            statusText = "\(context) failed: \(error.localizedDescription)"
+            return
+        }
+        statusText = "\(context): \(ae.localizedDescription)"
+        if ae.isHardDown { assistantHealth = ae }
+        guard ae.isTransient, consolidateRetries < Config.maxRetries else { return }
+
+        // Exponential backoff, honouring a server-provided retry-after when present.
+        var delay = Config.retryBackoffSeconds * pow(2, Double(consolidateRetries))
+        if case .rateLimited(let after?) = ae { delay = max(delay, after) }
+        consolidateRetries += 1
+        let attempt = consolidateRetries
+        statusText = "\(context) will retry (attempt \(attempt)) in \(Int(delay))s…"
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            retry()
+        }
+    }
+
+    /// Append a metered LLM event, trim to the retention window, and persist (metadata only).
+    private func recordUsage(_ event: UsageEvent) {
+        guard Config.usageTrackingEnabled else { return }
+        usage.append(event)
+        let cutoff = Date().addingTimeInterval(-Double(Config.usageRetentionDays) * 86_400)
+        usage.removeAll { $0.at < cutoff }
+        Store.saveUsage(usage)
     }
 
     // MARK: - Editing

@@ -22,7 +22,8 @@ enum Briefer {
     /// Generate today's briefing. Throws if the Claude CLI is unavailable or returns nothing.
     static func generate(memories: [Memory], sessions: [Session], model: String?) async throws -> String {
         let prompt = buildPrompt(memories: memories, sessions: sessions)
-        return try await AssistantRunner.claudeOneShot(prompt: prompt, system: system, model: model)
+        return try await AssistantRunner.claudeOneShot(prompt: prompt, system: system, model: model,
+                                                       feature: "brief")
     }
 
     /// Assemble the structured notes Claude briefs from. Bounded so the prompt stays small.
