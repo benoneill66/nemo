@@ -180,7 +180,9 @@ private struct SpeakerRenamePill: View {
                 Circle().fill(Color(hue: speaker.hue, saturation: 0.7, brightness: 1))
                     .frame(width: 8, height: 8)
                 Text(speaker.name).font(.system(size: 12, weight: .medium))
-                Image(systemName: "pencil").font(.system(size: 9)).opacity(0.5)
+                // A linked voice shows a person glyph rather than the rename pencil.
+                Image(systemName: speaker.personId != nil ? "person.fill" : "pencil")
+                    .font(.system(size: 9)).opacity(0.5)
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(Capsule().fill(Color(hue: speaker.hue, saturation: 0.7, brightness: 1).opacity(0.18)))
@@ -191,9 +193,38 @@ private struct SpeakerRenamePill: View {
         .popover(isPresented: $editing, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Name this speaker").font(.system(size: 12, weight: .semibold))
+                Text("Naming a voice attaches it to a person, so what they say builds that person's profile.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 TextField("e.g. Priya", text: $draft)
                     .textFieldStyle(.roundedBorder).frame(width: 200)
                     .onSubmit { commit() }
+
+                // Quick-attach to someone Nemo already knows, without retyping the name.
+                let known = state.sortedPeople.filter { !$0.speakerIds.contains(speaker.id) }
+                if !known.isEmpty {
+                    Divider()
+                    Text("Or attach to someone Nemo knows")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(known.prefix(8)) { p in
+                                Button {
+                                    state.attachSpeaker(speaker.id, toPersonId: p.id); editing = false
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "person.fill").font(.system(size: 9))
+                                        Text(p.name).font(.system(size: 12))
+                                        if !p.attributeLine.isEmpty {
+                                            Text("· \(p.attributeLine)").font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                                        }
+                                    }
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 130)
+                }
+
                 HStack {
                     Button("Clear") { state.renameSpeaker(speaker.id, to: ""); editing = false }
                         .controlSize(.small)
@@ -202,7 +233,7 @@ private struct SpeakerRenamePill: View {
                 }
             }
             .padding(14)
-            .frame(width: 230)
+            .frame(width: 250)
         }
     }
 
@@ -328,11 +359,18 @@ private struct SurfacedCard: View {
 
 // MARK: - Memory
 
+enum MemoryLayout: String, CaseIterable, Identifiable {
+    case cards = "Cards", graph = "Graph"
+    var id: String { rawValue }
+    var symbol: String { self == .cards ? "square.grid.2x2" : "circle.hexagongrid.fill" }
+}
+
 struct MemoryPane: View {
     @EnvironmentObject var state: AppState
     @State private var filter: Category? = nil
     @State private var showArchived = false
     @State private var selected: Memory?
+    @State private var layout: MemoryLayout = .cards
 
     private var shown: [Memory] {
         if showArchived { return state.archivedMemories.sorted { $0.updated > $1.updated } }
@@ -345,7 +383,10 @@ struct MemoryPane: View {
     var body: some View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 14) {
-                PaneHeader(title: "Memory", subtitle: "A rich, interconnected map of what Nemo knows about you.")
+                HStack(alignment: .top) {
+                    PaneHeader(title: "Memory", subtitle: "A rich, interconnected map of what Nemo knows about you.")
+                    layoutToggle
+                }
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -368,6 +409,9 @@ struct MemoryPane: View {
 
                 if state.memories.isEmpty {
                     emptyState
+                } else if layout == .graph && !showArchived {
+                    MemoryGraphView(memories: shown, selectedId: selected?.id) { selected = $0 }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
                         LazyVGrid(columns: cols, alignment: .leading, spacing: 12) {
@@ -385,6 +429,30 @@ struct MemoryPane: View {
                 MemoryDetail(mem: live) { selected = nil }
                     .frame(width: 320)
             }
+        }
+    }
+
+    /// Cards ↔ Graph switch. Graph isn't meaningful for the archived (superseded) set, so it's
+    /// hidden there.
+    @ViewBuilder private var layoutToggle: some View {
+        if !showArchived {
+            HStack(spacing: 2) {
+                ForEach(MemoryLayout.allCases) { l in
+                    Button { withAnimation(.easeInOut(duration: 0.2)) { layout = l } } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: l.symbol).font(.system(size: 11))
+                            Text(l.rawValue).font(.system(size: 12, weight: .medium))
+                        }
+                        .padding(.horizontal, 11).padding(.vertical, 6)
+                        .background(Capsule().fill(layout == l ? Color.white.opacity(0.18) : .clear))
+                        .foregroundStyle(.white.opacity(layout == l ? 1 : 0.6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(Capsule().fill(.white.opacity(0.06)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
         }
     }
 

@@ -8,6 +8,33 @@ All notable changes to Nemo are documented here. The format is based on
 
 ### Added
 
+- **A visual memory graph.** The **Memory** tab now has a **Cards / Graph** toggle. Graph view
+  renders your memories as an Obsidian-style "brain": each memory is a glowing node tinted by its
+  category and sized by importance, connected by edges — solid lines for explicit links between
+  memories, faint lines for memories that share an entity. The layout settles under a small
+  force-directed simulation (and gently reheats when you drag a node or memories change). Drag the
+  canvas to pan, pinch/scroll to zoom, hover to reveal labels, and tap a node to open it in the
+  detail panel. The category filter chips narrow the graph just like they narrow the cards.
+- **People as a first-class concept.** Nemo now builds a real directory of the people in your
+  life — a new **People** tab — instead of treating names as loose tags. After each consolidation
+  round, an enrichment pass extracts the people referenced in the new memories and accumulates
+  durable context on each: aliases, attributes (role, org, relationship, email), facts (with
+  provenance back to the memory they came from), the memories that mention them, and a running
+  mention count. Crucially, Nemo **never assumes two people are the same just because they share a
+  name** — it disambiguates like a human would, matching against people it already knows only when
+  the surrounding context fits, and treating an ambiguous name as a new person otherwise. When it
+  gets it wrong you can **merge** duplicates (one person absorbs another's aliases, facts, memories
+  and voices) or edit a profile by hand (pinned/edited profiles are never overwritten by
+  automation). Disable the LLM enrichment pass with `"people": false` in `config.json`.
+- **Attach voices to people.** Naming a speaker in the **Live** tab now attaches that voice to a
+  real person (resolving an existing one or creating a new one), so what they say feeds that
+  person's profile. You can also quick-attach a voice to someone Nemo already knows from the
+  speaker popover, or re-point voices from the person detail.
+- **People over MCP.** The Nemo MCP server gained `list_people` and `get_person` tools, so
+  assistants like Claude can pull a person's accumulated profile (aliases, attributes, facts, and
+  the memories they appear in). `get_person` returns every distinct person sharing a queried name
+  rather than guessing which one you meant.
+
 - **Gmail context import.** Link a Gmail account (read-only) from the **Import** tab and pull
   recent mail straight into memory. Auth uses Google's OAuth **loopback** flow — Nemo opens
   your browser, you approve, and a refresh token is stored locally (`0600`); no password and no
