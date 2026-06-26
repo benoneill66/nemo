@@ -1,12 +1,13 @@
 import SwiftUI
 
 enum Tab: String, CaseIterable, Identifiable {
-    case live = "Live", memory = "Memory", sessions = "Sessions", importing = "Import", activity = "Activity"
+    case live = "Live", memory = "Memory", people = "People", sessions = "Sessions", importing = "Import", activity = "Activity"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .live: return "waveform"
         case .memory: return "brain.head.profile"
+        case .people: return "person.2.fill"
         case .sessions: return "calendar"
         case .importing: return "square.and.arrow.down.on.square"
         case .activity: return "chart.bar.fill"
@@ -66,7 +67,8 @@ struct RootView: View {
             VStack(spacing: 4) {
                 ForEach(Tab.allCases) { t in
                     NavRow(tab: t, selected: tab == t,
-                           badge: t == .memory ? state.memories.count : nil) { tab = t }
+                           badge: t == .memory ? state.memories.count
+                                : t == .people ? state.people.count : nil) { tab = t }
                 }
             }
             .padding(.top, 6)
@@ -85,6 +87,7 @@ struct RootView: View {
         switch tab {
         case .live: LivePane()
         case .memory: MemoryPane()
+        case .people: PeoplePane()
         case .sessions: SessionsPane()
         case .importing: ImportPane()
         case .activity: ActivityPane()

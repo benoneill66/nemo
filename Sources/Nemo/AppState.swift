@@ -13,6 +13,7 @@ final class AppState: ObservableObject {
     @Published private(set) var memories: [Memory] = []
     @Published private(set) var sessions: [Session] = []
     @Published private(set) var speakers: [SpeakerIdentity] = []
+    @Published private(set) var people: [Person] = []          // first-class people directory (plan 16)
 
     // Live UI state
     @Published private(set) var listening = false
@@ -67,6 +68,7 @@ final class AppState: ObservableObject {
         memories = Store.loadMemories()
         sessions = Store.loadSessions()
         speakers = Store.loadSpeakers()
+        people = Store.loadPeople()
         briefing = Store.loadBriefing()
         // Restore learned voices so returning speakers keep their identity (and name).
         diarizer.seed(speakers.map { (id: $0.id, centroid: $0.centroid, count: $0.count) })
@@ -300,16 +302,20 @@ final class AppState: ObservableObject {
     }
     func speakerName(_ id: Int?) -> String? { speaker(id)?.name }
 
-    /// Give a speaker a real name. Empty input reverts it to the default "Speaker N".
+    /// Give a speaker a real name. Empty input reverts it to the default "Speaker N". Naming a
+    /// speaker also attaches its voice to a real Person (resolving an existing one by name, or
+    /// creating one) — this is how voices become people (plan 16).
     func renameSpeaker(_ id: Int, to name: String) {
         guard let idx = speakers.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             speakers[idx].name = "Speaker \(id + 1)"
             speakers[idx].renamed = false
+            detachSpeakerFromPerson(id)        // clearing the name unlinks the person too
         } else {
             speakers[idx].name = trimmed
             speakers[idx].renamed = true
+            linkSpeaker(id, toPersonNamed: trimmed)
         }
         Store.saveSpeakers(speakers)
     }
@@ -319,6 +325,269 @@ final class AppState: ObservableObject {
     var activeSpeakers: [SpeakerIdentity] {
         let present = Set(segments.compactMap(\.speaker))
         return speakers.filter { present.contains($0.id) }.sorted { $0.id < $1.id }
+    }
+
+    // MARK: - People (plan 16)
+
+    func person(_ id: UUID?) -> Person? {
+        guard let id else { return nil }
+        return people.first { $0.id == id }
+    }
+
+    /// The Person a speaker is attached to, if any.
+    func person(forSpeaker speakerId: Int?) -> Person? {
+        guard let sid = speakerId, let pid = speaker(sid)?.personId else { return nil }
+        return person(pid)
+    }
+
+    /// People sorted for display: pinned first, then by how recently they were seen.
+    var sortedPeople: [Person] {
+        people.sorted {
+            if $0.pinned != $1.pinned { return $0.pinned }
+            return $0.lastSeen > $1.lastSeen
+        }
+    }
+
+    /// Find an existing person by an exact known-name match (case-insensitive).
+    private func personIndex(named name: String) -> Int? {
+        let key = name.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return nil }
+        return people.firstIndex { $0.knownNames.contains(key) }
+    }
+
+    /// Attach a speaker's voice to a person identified by name — resolving an existing person
+    /// (exact name match) or creating a new one. Conservative on purpose: it won't guess between
+    /// two same-named people; the user can re-point the speaker via `attachSpeaker(_:toPersonId:)`.
+    private func linkSpeaker(_ speakerId: Int, toPersonNamed name: String) {
+        guard let sidx = speakers.firstIndex(where: { $0.id == speakerId }) else { return }
+        let pid: UUID
+        if let pIdx = personIndex(named: name) {
+            pid = people[pIdx].id
+            if !people[pIdx].speakerIds.contains(speakerId) { people[pIdx].speakerIds.append(speakerId) }
+            people[pIdx].lastSeen = Date()
+        } else {
+            var p = Person(name: name.trimmingCharacters(in: .whitespaces), speakerIds: [speakerId])
+            p.attributes["source"] = "voice"
+            pid = p.id
+            people.append(p)
+        }
+        speakers[sidx].personId = pid
+        Store.savePeople(people)
+        Store.saveSpeakers(speakers)
+    }
+
+    /// Re-point a speaker at a specific existing person (used from the UI person picker).
+    func attachSpeaker(_ speakerId: Int, toPersonId personId: UUID) {
+        guard let sidx = speakers.firstIndex(where: { $0.id == speakerId }),
+              let pidx = people.firstIndex(where: { $0.id == personId }) else { return }
+        // Remove this speaker from any other person first.
+        for i in people.indices where i != pidx { people[i].speakerIds.removeAll { $0 == speakerId } }
+        if !people[pidx].speakerIds.contains(speakerId) { people[pidx].speakerIds.append(speakerId) }
+        speakers[sidx].personId = personId
+        // Keep the speaker label in step with the person's name.
+        speakers[sidx].name = people[pidx].name
+        speakers[sidx].renamed = true
+        Store.savePeople(people)
+        Store.saveSpeakers(speakers)
+    }
+
+    private func detachSpeakerFromPerson(_ speakerId: Int) {
+        guard let sidx = speakers.firstIndex(where: { $0.id == speakerId }) else { return }
+        if let pid = speakers[sidx].personId,
+           let pidx = people.firstIndex(where: { $0.id == pid }) {
+            people[pidx].speakerIds.removeAll { $0 == speakerId }
+            Store.savePeople(people)
+        }
+        speakers[sidx].personId = nil
+    }
+
+    // MARK: People editing & merge
+
+    /// Replace a person's user-facing fields and mark them user-edited so automation won't clobber.
+    func updatePerson(_ id: UUID, name: String? = nil, summary: String? = nil,
+                      relationship: String? = nil) {
+        guard let idx = people.firstIndex(where: { $0.id == id }) else { return }
+        if let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            // Keep the old name as an alias so prior references still resolve.
+            if people[idx].name.lowercased() != name.lowercased(),
+               !people[idx].aliases.contains(people[idx].name) {
+                people[idx].aliases.append(people[idx].name)
+            }
+            people[idx].name = name
+        }
+        if let summary { people[idx].summary = summary }
+        if let relationship { people[idx].attributes["relationship"] = relationship }
+        people[idx].userEdited = true
+        Store.savePeople(people)
+        // Keep attached speaker labels in sync with the (possibly) new name.
+        if let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            for sid in people[idx].speakerIds {
+                if let s = speakers.firstIndex(where: { $0.id == sid }) {
+                    speakers[s].name = name; speakers[s].renamed = true
+                }
+            }
+            Store.saveSpeakers(speakers)
+        }
+    }
+
+    func setPersonPinned(_ id: UUID, _ pinned: Bool) {
+        guard let idx = people.firstIndex(where: { $0.id == id }) else { return }
+        people[idx].pinned = pinned
+        Store.savePeople(people)
+    }
+
+    func deletePerson(_ id: UUID) {
+        // Unlink any speakers pointing at this person.
+        for i in speakers.indices where speakers[i].personId == id { speakers[i].personId = nil }
+        people.removeAll { $0.id == id }
+        Store.savePeople(people)
+        Store.saveSpeakers(speakers)
+    }
+
+    /// Merge `sourceId` into `destId`: the destination absorbs the source's aliases, facts,
+    /// attributes, linked memories and speakers, then the source is removed. This is the manual
+    /// correction for "Nemo split one person into two" — never assume; let the user decide.
+    func mergePeople(_ sourceId: UUID, into destId: UUID) {
+        guard sourceId != destId,
+              let s = people.first(where: { $0.id == sourceId }),
+              let didx = people.firstIndex(where: { $0.id == destId }) else { return }
+        var dest = people[didx]
+
+        // Names: keep dest's canonical name; fold the source's names in as aliases.
+        var aliasSet = Set(dest.aliases.map { $0.lowercased() })
+        for n in ([s.name] + s.aliases) where !n.isEmpty {
+            if n.lowercased() != dest.name.lowercased(), !aliasSet.contains(n.lowercased()) {
+                dest.aliases.append(n); aliasSet.insert(n.lowercased())
+            }
+        }
+        // Facts: append, dedup by normalized text.
+        var seen = Set(dest.facts.map(\.dedupKey))
+        for f in s.facts where !seen.contains(f.dedupKey) { dest.facts.append(f); seen.insert(f.dedupKey) }
+        // Attributes: dest wins; fill blanks from source.
+        for (k, v) in s.attributes where (dest.attributes[k]?.isEmpty ?? true) { dest.attributes[k] = v }
+        dest.memoryIds = Array(Set(dest.memoryIds + s.memoryIds))
+        dest.speakerIds = Array(Set(dest.speakerIds + s.speakerIds))
+        dest.mentionCount += s.mentionCount
+        dest.firstSeen = min(dest.firstSeen, s.firstSeen)
+        dest.lastSeen = max(dest.lastSeen, s.lastSeen)
+        dest.pinned = dest.pinned || s.pinned
+        dest.userEdited = dest.userEdited || s.userEdited
+        dest.mergedFrom.append(s.id)
+        dest.mergedFrom.append(contentsOf: s.mergedFrom)
+
+        people[didx] = dest
+        people.removeAll { $0.id == sourceId }
+        // Re-point any speakers that were attached to the source.
+        for i in speakers.indices where speakers[i].personId == sourceId { speakers[i].personId = destId }
+        Store.savePeople(people)
+        Store.saveSpeakers(speakers)
+        statusText = "Merged \(s.name) into \(dest.name)"
+    }
+
+    // MARK: People building (runs after consolidation)
+
+    /// After a consolidation round, enrich the people directory from the memories that were just
+    /// created or updated: extract people, accumulate durable facts/attributes, and resolve each
+    /// (match-or-new) against the existing directory — the human-like disambiguation that keeps
+    /// two same-named people distinct. Bounded to one LLM call per round; falls back to a
+    /// conservative deterministic attach if the model is unavailable.
+    private func buildPeople(touched: [Memory]) {
+        guard Config.peopleEnabled, !touched.isEmpty,
+              PeopleBuilder.hasCandidates(in: touched) else { return }
+        let snapshot = people
+        let model = Config.memoryModel
+        let titleToId = Dictionary(touched.map { ($0.title.lowercased(), $0.id) },
+                                   uniquingKeysWith: { a, _ in a })
+        Task {
+            do {
+                let resolutions = try await PeopleBuilder.resolve(touched: touched, existing: snapshot,
+                                                                  model: model)
+                await MainActor.run { self.applyPeopleResolutions(resolutions, titleToId: titleToId,
+                                                                  touched: touched) }
+            } catch {
+                // Model unavailable or output unusable — keep things moving with a safe attach.
+                await MainActor.run {
+                    self.people = PeopleBuilder.resolveDeterministically(touched: touched,
+                                                                         existing: self.people)
+                    Store.savePeople(self.people)
+                }
+            }
+        }
+    }
+
+    private func applyPeopleResolutions(_ resolutions: [PeopleBuilder.Resolution],
+                                        titleToId: [String: UUID], touched: [Memory]) {
+        let now = Date()
+        let touchedById = Dictionary(touched.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for r in resolutions {
+            let name = Self.cleanField(r.name) ?? ""
+            guard !name.isEmpty else { continue }
+
+            // Resolve the target person: the model's explicit match, else a safety-net exact-name
+            // match (so we never duplicate a name we already store), else a brand-new person.
+            var idx: Int?
+            if let mid = r.match, mid.lowercased() != "null", let uid = UUID(uuidString: mid) {
+                idx = people.firstIndex { $0.id == uid }
+            }
+            if idx == nil { idx = personIndex(named: name) }
+
+            let memIds = (r.memories ?? []).compactMap { titleToId[$0.lowercased()] }
+            let source = memIds.first.flatMap { touchedById[$0]?.source } ?? "transcript"
+
+            if let i = idx {
+                foldResolution(into: &people[i], r, name: name, memIds: memIds, source: source, now: now)
+            } else {
+                var p = Person(name: name, firstSeen: now, lastSeen: now)
+                foldResolution(into: &p, r, name: name, memIds: memIds, source: source, now: now)
+                people.append(p)
+            }
+        }
+        Store.savePeople(people)
+    }
+
+    /// Fold one resolution's data into a person, deduping facts/aliases and respecting user edits.
+    private func foldResolution(into p: inout Person, _ r: PeopleBuilder.Resolution,
+                                name: String, memIds: [UUID], source: String, now: Date) {
+        var aliasSet = Set(p.knownNames)
+        func addAlias(_ raw: String) {
+            guard let t = Self.cleanField(raw), !aliasSet.contains(t.lowercased()) else { return }
+            p.aliases.append(t); aliasSet.insert(t.lowercased())
+        }
+        // Prefer a fuller name the model surfaced (e.g. "Priya" → "Priya Shah"), keeping the old
+        // as an alias — but never override a name the user set by hand.
+        if !p.userEdited, name.count > p.name.count,
+           name.lowercased().contains(p.name.lowercased()) {
+            addAlias(p.name); p.name = name
+        } else if name.lowercased() != p.name.lowercased() {
+            addAlias(name)
+        }
+        for a in (r.aliases ?? []) { addAlias(a) }
+
+        if let role = Self.cleanField(r.role) { p.attributes["role"] = role }
+        if let org = Self.cleanField(r.org) { p.attributes["org"] = org }
+        if let email = Self.cleanField(r.email) { p.attributes["email"] = email }
+        if let rel = Self.cleanField(r.relationship), (p.attributes["relationship"]?.isEmpty ?? true) {
+            p.attributes["relationship"] = rel
+        }
+
+        var seen = Set(p.facts.map(\.dedupKey))
+        for f in (r.facts ?? []) {
+            guard let text = Self.cleanField(f), text.count > 1 else { continue }
+            let fact = PersonFact(text: text, source: source, sourceMemoryId: memIds.first)
+            if !seen.contains(fact.dedupKey) { p.facts.append(fact); seen.insert(fact.dedupKey) }
+        }
+        if p.facts.count > 40 { p.facts.removeFirst(p.facts.count - 40) }   // bound growth
+
+        for id in memIds where !p.memoryIds.contains(id) { p.memoryIds.append(id) }
+        p.mentionCount += 1
+        p.lastSeen = now
+    }
+
+    /// Trim a model-supplied string and treat empty / "null" / "none" placeholders as absent.
+    private static func cleanField(_ s: String?) -> String? {
+        guard let t = s?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        let l = t.lowercased()
+        return (l == "null" || l == "none" || l == "n/a") ? nil : t
     }
 
     // MARK: - Sessions
@@ -851,6 +1120,14 @@ final class AppState: ObservableObject {
         memories = merged
         Store.saveMemories(memories)
         embeddings.sync(memories)
+
+        // Enrich the people directory from the memories this pass created or substantively changed.
+        let baseById = Dictionary(base.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let touched = memories.filter { m in
+            guard let b = baseById[m.id] else { return true }   // newly created
+            return b.content != m.content || b.entities != m.entities
+        }
+        buildPeople(touched: touched)
     }
 
     // MARK: - CLI resilience & usage (plans 08 / 09)

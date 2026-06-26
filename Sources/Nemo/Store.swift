@@ -25,6 +25,7 @@ enum Store {
     private static var sessionsURL: URL { dir.appendingPathComponent("sessions.json") }
     private static var briefingURL: URL { dir.appendingPathComponent("briefing.json") }
     private static var speakersURL: URL { dir.appendingPathComponent("speakers.json") }
+    private static var peopleURL: URL { dir.appendingPathComponent("people.json") }
     private static var embeddingsURL: URL { dir.appendingPathComponent("embeddings.json") }
     private static var usageURL: URL { dir.appendingPathComponent("usage.json") }
 
@@ -77,6 +78,7 @@ enum Store {
 
     static func loadBriefing() -> Briefing? { load(briefingURL, Briefing.self) }
     static func loadSpeakers() -> [SpeakerIdentity] { load(speakersURL, [SpeakerIdentity].self) ?? [] }
+    static func loadPeople() -> [Person] { load(peopleURL, [Person].self) ?? [] }
 
     static func saveSegments(_ v: [TranscriptSegment]) {
         if let s = sqlite { s.saveSegments(v) }   // primary store
@@ -89,6 +91,7 @@ enum Store {
     static func saveSessions(_ v: [Session]) { save(v, to: sessionsURL) }
     static func saveBriefing(_ v: Briefing) { save(v, to: briefingURL) }
     static func saveSpeakers(_ v: [SpeakerIdentity]) { save(v, to: speakersURL) }
+    static func savePeople(_ v: [Person]) { save(v, to: peopleURL) }
 
     // Semantic embedding cache (plan 01) — safe to delete; rebuilds on next sync.
     static func loadEmbeddingCache() -> EmbeddingCache? { load(embeddingsURL, EmbeddingCache.self) }

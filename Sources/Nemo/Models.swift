@@ -87,6 +87,7 @@ struct SpeakerIdentity: Codable, Identifiable, Hashable {
     var count: Int = 0                 // fingerprints folded in (confidence in the centroid)
     var renamed: Bool = false          // user gave it a real name (vs. the default "Speaker N")
     var firstSeen: Date = Date()
+    var personId: UUID? = nil          // the Person this voice is attached to (plan 16), if any
 
     /// A stable, pleasant hue per speaker for chips/labels in the UI.
     var hue: Double {

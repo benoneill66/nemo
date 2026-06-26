@@ -201,6 +201,13 @@ enum Config {
     static var gmailMaxMessages: Int { (gmail["maxMessages"] as? Int) ?? 50 }
     private static var gmail: [String: Any] { (raw()["gmail"] as? [String: Any]) ?? [:] }
 
+    // MARK: - People directory (plan 16)
+    /// Build a first-class people directory from consolidated memories: extract people, accumulate
+    /// context about them over time, and disambiguate same-named people using prior context.
+    /// Set "people": false in config.json to disable the LLM enrichment pass (the directory then
+    /// only grows from named speakers and manual edits).
+    static var peopleEnabled: Bool { bool("people", default: true) }
+
     // MARK: - Storage backend (plan 10)
     /// "json" (default) or "sqlite". In sqlite mode, memories + segments are stored in nemo.db
     /// (indexed, FTS) and also mirrored to JSON as a backup for easy rollback.

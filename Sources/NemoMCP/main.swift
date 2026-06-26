@@ -27,6 +27,23 @@ struct MCPSegment: Decodable {
     var start: Date
 }
 
+struct MCPPersonFact: Decodable { var text: String }
+
+struct MCPPerson: Decodable {
+    var id: UUID
+    var name: String
+    var aliases: [String]
+    var summary: String
+    var attributes: [String: String]
+    var facts: [MCPPersonFact]
+    var memoryIds: [UUID]
+    var speakerIds: [Int]
+    var mentionCount: Int
+    var lastSeen: Date?
+
+    var knownNames: [String] { ([name] + aliases).map { $0.lowercased() } }
+}
+
 private struct EmbeddingCacheDTO: Decodable { var vectors: [String: [Double]] }
 
 enum DataStore {
@@ -45,6 +62,7 @@ enum DataStore {
         (load("memories.json", [MCPMemory].self) ?? []).filter { !($0.superseded ?? false) }
     }
     static func segments() -> [MCPSegment] { load("transcript.json", [MCPSegment].self) ?? [] }
+    static func people() -> [MCPPerson] { load("people.json", [MCPPerson].self) ?? [] }
     static func embeddings() -> [String: [Double]] {
         load("embeddings.json", EmbeddingCacheDTO.self)?.vectors ?? [:]
     }
@@ -102,6 +120,21 @@ enum Tools {
          "category": m.category, "importance": m.importance, "entities": m.entities]
     }
 
+    /// Full person profile, with linked memory titles resolved so the assistant gets real context.
+    private static func dto(_ p: MCPPerson, memoriesById: [String: MCPMemory]) -> [String: Any] {
+        let mems = p.memoryIds.compactMap { memoriesById[$0.uuidString]?.title }
+        return ["id": p.id.uuidString, "name": p.name, "aliases": p.aliases,
+                "summary": p.summary, "attributes": p.attributes,
+                "facts": p.facts.map(\.text), "mentions": p.mentionCount,
+                "memories": mems]
+    }
+
+    /// Compact person entry for listings.
+    private static func brief(_ p: MCPPerson) -> [String: Any] {
+        ["name": p.name, "aliases": p.aliases, "summary": p.summary,
+         "facts": p.facts.count, "mentions": p.mentionCount]
+    }
+
     static func call(_ name: String, _ args: [String: Any]) -> String {
         let limit = (args["limit"] as? Int) ?? 8
         switch name {
@@ -120,6 +153,25 @@ enum Tools {
                 .filter { $0.category.lowercased() == "action items" }
                 .sorted { $0.importance > $1.importance }
             return json(tasks.prefix(limit).map(dto))
+        case "list_people":
+            let people = DataStore.people()
+                .sorted { ($0.lastSeen ?? .distantPast) > ($1.lastSeen ?? .distantPast) }
+            return json(people.prefix(limit).map(brief))
+        case "get_person":
+            let q = (args["name"] as? String)?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
+            guard !q.isEmpty else { return json([String: Any]()) }
+            let people = DataStore.people()
+            let memoriesById = Dictionary(DataStore.memories().map { ($0.id.uuidString, $0) },
+                                          uniquingKeysWith: { a, _ in a })
+            // Prefer an exact known-name match, then fall back to a substring match. When several
+            // people share the queried name, return them all so the caller can disambiguate.
+            let exact = people.filter { $0.knownNames.contains(q) }
+            let matches = exact.isEmpty
+                ? people.filter { $0.knownNames.contains { $0.contains(q) } }
+                : exact
+            if matches.isEmpty { return json([String: Any]()) }
+            if matches.count == 1 { return json(dto(matches[0], memoriesById: memoriesById)) }
+            return json(matches.map { dto($0, memoriesById: memoriesById) })
         case "search_transcript":
             let q = (args["query"] as? String).map { $0.lowercased() } ?? ""
             let fmt = ISO8601DateFormatter()
@@ -152,6 +204,18 @@ enum Tools {
             "name": "list_action_items",
             "description": "List the user's open action items captured by Nemo, most important first.",
             "inputSchema": ["type": "object", "properties": ["limit": ["type": "integer"]]]
+        ],
+        [
+            "name": "list_people",
+            "description": "List the people Nemo has built up context on (from the user's spoken life, meetings, and imports), most recently seen first. Returns each person's name, aliases, and a short summary.",
+            "inputSchema": ["type": "object", "properties": ["limit": ["type": "integer"]]]
+        ],
+        [
+            "name": "get_person",
+            "description": "Get the full profile Nemo has on a person by name: aliases, attributes (role/org/relationship), accumulated facts, and the memories they're mentioned in. If multiple distinct people share the name, returns all of them so you can disambiguate (Nemo never assumes same-name means same person).",
+            "inputSchema": ["type": "object",
+                            "properties": ["name": ["type": "string", "description": "The person's name (or a known alias)"]],
+                            "required": ["name"]]
         ],
         [
             "name": "search_transcript",
