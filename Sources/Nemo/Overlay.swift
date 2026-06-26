@@ -46,7 +46,7 @@ final class OverlayController {
         if visible {
             let panel = panel ?? makePanel()
             self.panel = panel
-            positionBottomCenter(panel)
+            positionBottomRight(panel)
             panel.orderFrontRegardless()
         } else {
             panel?.orderOut(nil)
@@ -76,12 +76,13 @@ final class OverlayController {
     }
 
     private let bottomInset: CGFloat = 44
+    private let sideInset: CGFloat = 24
 
-    /// Park the bar centered near the bottom of the active screen, like a system HUD.
-    private func positionBottomCenter(_ panel: NSPanel) {
+    /// Park the bar in the bottom-right corner of the active screen, like a system HUD.
+    private func positionBottomRight(_ panel: NSPanel) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let vf = screen.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: vf.midX - panel.frame.width / 2, y: vf.minY + bottomInset))
+        panel.setFrameOrigin(NSPoint(x: vf.maxX - panel.frame.width - sideInset, y: vf.minY + bottomInset))
     }
 
     /// Grow/shrink the panel to fit the card, always re-pinning its bottom edge to the screen
