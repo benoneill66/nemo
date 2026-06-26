@@ -4,6 +4,19 @@ All notable changes to Nemo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-06-26
+
+### Fixed
+
+- **Much lower idle CPU; the app no longer feels laggy.** While Nemo was listening, the live mic
+  level was published on the app-wide state object ~47 times a second, which re-evaluated the
+  *entire* SwiftUI view tree that often the whole time you were recording. The level now lives in a
+  dedicated, throttled meter so only the waveform reacts to it.
+- **Animations now idle when nothing is moving.** The memory graph was repainting at the full
+  display refresh rate forever — even after its force-directed layout had settled — and the floating
+  overlay waveform redrew at 30 fps even when idle. Both now drop to a slow keepalive when at rest
+  and instantly ramp back up on interaction.
+
 ## [1.3.0] — 2026-06-26
 
 ### Added
@@ -147,6 +160,7 @@ First public release.
 - **Packaging.** `build.sh`, `install.sh`, and `package.sh` for a signed `.app` and a
   drag-to-install `.dmg`.
 
-[Unreleased]: https://github.com/benoneill66/nemo/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/benoneill66/nemo/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/benoneill66/nemo/compare/v1.3.0...v1.3.1
 [1.1.0]: https://github.com/benoneill66/nemo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/benoneill66/nemo/releases/tag/v1.0.0
