@@ -86,6 +86,10 @@ final class GraphSim: ObservableObject {
 
     func position(_ id: UUID) -> CGPoint? { bodies[id]?.pos }
 
+    /// True while the layout still has meaningful motion left (or a node is being dragged). When
+    /// this goes false the view stops driving redraws at the display refresh rate.
+    var active: Bool { alpha > 0.012 || dragging != nil }
+
     /// Pin a node to a point (used while dragging).
     func place(_ id: UUID, at p: CGPoint) {
         bodies[id]?.pos = p
@@ -210,7 +214,11 @@ struct MemoryGraphView: View {
                             .onEnded { _ in panBase = pan }
                     )
 
-                TimelineView(.animation) { tl in
+                // Drive the physics at 60fps only while it's actually settling; once cooled, the
+                // schedule idles to a 5fps keepalive so a static graph costs next to nothing. A
+                // drag, zoom, reset, or change to the underlying memories reheats `sim` and the
+                // keepalive ticks pick that up within ~0.2s, ramping straight back to 60fps.
+                TimelineView(ActivitySchedule(activeFPS: 60, idleInterval: 0.2, isActive: { sim.active })) { tl in
                     let _ = tl.date
                     let _ = sim.step(center: center)
                     ZStack {

@@ -162,7 +162,7 @@ struct OverlayBar: View {
     private var header: some View {
         HStack(spacing: 10) {
             ListeningOrb(active: state.listening)
-            WaveBars(level: state.audioLevel, active: state.listening)
+            WaveBars(meter: state.meter, active: state.listening)
                 .frame(width: 56)
             Text(caption)
                 .font(.system(size: 12, weight: .medium))
@@ -252,12 +252,17 @@ private struct SurfacedRow: View {
 }
 
 /// Five capsule bars that breathe with the live mic level; gently idles when paused.
+///
+/// Reads the level straight off the shared `AudioMeter` rather than taking it as a value, so the
+/// enclosing `OverlayBar` body isn't invalidated on every level change — only this view samples it,
+/// once per animation frame. When inactive the timeline drops to a slow keepalive so an idle (but
+/// visible) overlay isn't repainting 30×/s for nothing.
 private struct WaveBars: View {
-    let level: Float
+    let meter: AudioMeter
     let active: Bool
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { tl in
+        TimelineView(ActivitySchedule(activeFPS: 30, idleInterval: 0.25, isActive: { active })) { tl in
             let t = tl.date.timeIntervalSinceReferenceDate
             HStack(spacing: 3) {
                 ForEach(0..<5, id: \.self) { i in
@@ -267,14 +272,13 @@ private struct WaveBars: View {
                 }
             }
             .frame(height: 26, alignment: .center)
-            .animation(.easeOut(duration: 0.08), value: level)
         }
     }
 
     private func height(_ i: Int, _ t: Double) -> CGFloat {
         let phase = Double(i) * 0.7
         let wobble = (sin(t * 7 + phase) + 1) / 2          // 0…1
-        let amp = active ? Double(level) : 0.05
+        let amp = active ? Double(meter.level) : 0.05
         let h = 4 + amp * 22 * (0.35 + 0.65 * wobble)
         return max(4, CGFloat(h))
     }

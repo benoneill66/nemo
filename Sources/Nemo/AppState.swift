@@ -19,7 +19,10 @@ final class AppState: ObservableObject {
     @Published private(set) var listening = false
     @Published private(set) var statusText = "Idle"
     @Published private(set) var partialText = ""           // what's being heard right now
-    @Published private(set) var audioLevel: Float = 0      // smoothed 0…1 mic loudness (drives the overlay waveform)
+    /// Live mic loudness for the waveform. Deliberately *not* `@Published` on `AppState`: the audio
+    /// tap fires ~47×/s, and republishing the whole app state that often re-rendered every view. It
+    /// lives in its own observable so only the waveform reacts. See `AudioMeter`.
+    let meter = AudioMeter()
     @Published private(set) var isConsolidating = false
     @Published private(set) var isImporting = false
     @Published private(set) var isDeduping = false           // graph maintenance in flight (plan 03)
@@ -90,11 +93,8 @@ final class AppState: ObservableObject {
         engine.onSegment = { [weak self] text, start, end, voice in
             self?.ingest(text: text, start: start, end: end, voice: voice)
         }
-        // Smooth the raw per-buffer level so the waveform glides rather than jitters.
-        engine.onLevel = { [weak self] lvl in
-            guard let self else { return }
-            self.audioLevel = self.audioLevel * 0.55 + lvl * 0.45
-        }
+        // Smoothing + throttling now live in the meter, off the main view-update path.
+        engine.onLevel = { [weak self] lvl in self?.meter.update(lvl) }
 
         overlay = OverlayController(state: self)   // persistent floating bar (plan 14)
     }
@@ -144,7 +144,7 @@ final class AppState: ObservableObject {
         surfaceTimer?.invalidate(); surfaceTimer = nil
         listening = false
         partialText = ""
-        audioLevel = 0
+        meter.reset()
         statusText = "Paused"
     }
 
@@ -200,10 +200,10 @@ final class AppState: ObservableObject {
             statusText = inMeeting ? "In meeting — listening" : "Listening"
         case .stopped:
             listening = false
-            audioLevel = 0
+            meter.reset()
         case .needsAuth(let m), .unavailable(let m):
             listening = false
-            audioLevel = 0
+            meter.reset()
             statusText = m
         }
     }
