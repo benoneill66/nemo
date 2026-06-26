@@ -337,6 +337,16 @@ final class AppState: ObservableObject {
         consolidateSession(closed)
     }
 
+    /// Delete a session and its captured transcript segments. Memories already distilled
+    /// from the session are left intact — they live independently of the session record.
+    func deleteSession(_ id: UUID) {
+        sessions.removeAll { $0.id == id }
+        Store.saveSessions(sessions)
+        segments.removeAll { $0.sessionId == id }
+        Store.saveSegments(segments)
+        statusText = "Session deleted"
+    }
+
     // MARK: - Consolidation
 
     private func startConsolidateTimer() {

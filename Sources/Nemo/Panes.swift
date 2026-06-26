@@ -720,6 +720,7 @@ private struct SessionCard: View {
     let session: Session
     let count: Int
     @State private var expanded = false
+    @State private var confirmingDelete = false
 
     private var range: String {
         let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
@@ -743,6 +744,16 @@ private struct SessionCard: View {
                 Button { withAnimation { expanded.toggle() } } label: {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").foregroundStyle(.white.opacity(0.5))
                 }.buttonStyle(.plain)
+                Button(role: .destructive) { confirmingDelete = true } label: {
+                    Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+                .confirmationDialog("Delete “\(session.title)”?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                    Button("Delete Session", role: .destructive) { state.deleteSession(session.id) }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This removes the session and its \(count) captured transcript segment\(count == 1 ? "" : "s"). Distilled memories are kept.")
+                }
             }
             if let summary = session.summary {
                 Text(summary).font(.system(size: 12)).foregroundStyle(.white.opacity(0.78))
