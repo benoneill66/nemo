@@ -61,6 +61,13 @@ and Apple's Speech framework for transcription, so raw audio never leaves your M
   said is grouped, and when it ends Claude writes a summary and folds it into memory.
 - **Mark by keyword** — say "important", "remember this", "action item", "note to self", etc.
   and that moment is starred and pushed to high importance during consolidation.
+- **Connects to Gmail** — link a Gmail account (read-only) from the **Import** tab and pull
+  recent mail straight into memory. Auth is Google's standard OAuth **loopback** flow — Nemo
+  opens your browser, you approve, and a refresh token is stored locally (`0600`); no password,
+  no embedded webview. If you already use the `gog` CLI, Nemo **reuses its OAuth client**, so
+  there's nothing to register — just click Connect. Pulled mail is distilled by the same import
+  pipeline as everything else, so commitments, people, and decisions in your inbox become
+  categorized, linked memories.
 - **Imports existing context** — auto-discovers Claude's file memories so it starts out
   already knowing you. Claude's memories are already structured (one fact per file, with
   categories and `[[links]]`), so they're **parsed directly — instantly, no LLM** — preserving
@@ -188,6 +195,12 @@ No API keys required — memory is built with your Claude CLI login. Config live
   "wakeAnswer": true,
   "wakeWords": ["nemo", "nimo", "neemo"],
   "importPaths": ["~/Downloads/chatgpt-export"],
+  "gmail": {
+    "clientId": "xxxxxxxx.apps.googleusercontent.com",
+    "clientSecret": "xxxxxxxx",
+    "query": "newer_than:30d -category:promotions -category:social",
+    "maxMessages": 50
+  },
   "voice": "Zoe (Premium)",
   "rate": 0.5,
 
@@ -232,6 +245,14 @@ No API keys required — memory is built with your Claude CLI login. Config live
 - `wakeAnswer` — set `false` to disable the spoken "Hey Nemo, …" answer feature.
 - `wakeWords` — wake words (without "hey") for the answer feature; add mishear variants.
 - `importPaths` — extra files/dirs of existing assistant memory to offer in the Import tab.
+- `gmail` — link a Gmail account to pull mail into memory. **No setup needed if you use the
+  [`gog`](https://github.com/) CLI** — Nemo reuses gog's stored OAuth client automatically, so
+  you just click **Connect** in the Import tab. Otherwise create an OAuth **Desktop app** client
+  in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (with the
+  **Gmail API** enabled) and set `clientId` / `clientSecret` here (or the `GMAIL_CLIENT_ID` /
+  `GMAIL_CLIENT_SECRET` env vars). `query` bounds what's pulled (Gmail search syntax);
+  `maxMessages` caps a single pull. Scope is `gmail.readonly` — Nemo never sends or modifies
+  mail. The `gmail` block is entirely optional.
 - `voice` / `rate` — TTS voice and speed for spoken answers. Omit `voice` to auto-pick the
   best English voice installed. Download **Premium** voices in *System Settings →
   Accessibility → Spoken Content → System Voice → Manage Voices*.
@@ -270,6 +291,7 @@ Everything is plain JSON under `~/.config/nemo/data/`:
 | `speakers.json` | learned voice fingerprints (acoustic features only) |
 | `embeddings.json` | on-device semantic vectors per memory (cache; safe to delete) |
 | `usage.json` | metered LLM activity — metadata only, no prompt/response text |
+| `gmail.json` | Gmail OAuth refresh/access token (`0600`); delete to unlink the account |
 | `nemo.db` | SQLite store for memories + segments (only when `storageBackend: "sqlite"`) |
 
 Delete a file to reset that part; the app rebuilds from there.
@@ -314,7 +336,8 @@ Tools: `search_memories` (semantic + keyword), `list_recent`, `list_action_items
 | `Sources/Nemo/MemoryQA.swift` | Retrieval-augmented answers for "Hey Nemo" |
 | `Sources/Nemo/SpeakerDiarizer.swift` | On-device voice fingerprinting + speaker clustering |
 | `Sources/Nemo/Redactor.swift` | Secret-stripping redaction before persist/send |
-| `Sources/Nemo/ContextImporter.swift` | Seeds memory from other assistants' files |
+| `Sources/Nemo/ContextImporter.swift` | Seeds memory from other assistants' files & Gmail |
+| `Sources/Nemo/GmailService.swift` | Gmail OAuth (loopback) + read-only REST fetch of mail |
 | `Sources/Nemo/EventKitExporter.swift` | Exports action items to Apple Reminders |
 | `Sources/Nemo/UsageLog.swift` | LLM call metering for the Activity tab |
 | `Sources/Nemo/Pricing.swift` | Token-cost estimates for usage reporting |

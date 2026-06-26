@@ -163,6 +163,44 @@ enum Config {
     /// instead of only while listening. Set "overlayAlwaysVisible": false to hide when idle.
     static var overlayAlwaysVisible: Bool { bool("overlayAlwaysVisible", default: true) }
 
+    // MARK: - Gmail context import (plan 15)
+    /// OAuth client for the Gmail integration. Resolution order:
+    ///   1. config.json `gmail.clientId` / `gmail.clientSecret`
+    ///   2. GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET environment variables
+    ///   3. the `gog` CLI's stored OAuth client (a Desktop client whose loopback redirect we can
+    ///      reuse), so anyone already signed into gog gets Gmail import with zero setup.
+    static var gmailClientId: String? {
+        (gmail["clientId"] as? String)
+            ?? ProcessInfo.processInfo.environment["GMAIL_CLIENT_ID"]
+            ?? gogClient()?.id
+    }
+    static var gmailClientSecret: String? {
+        (gmail["clientSecret"] as? String)
+            ?? ProcessInfo.processInfo.environment["GMAIL_CLIENT_SECRET"]
+            ?? gogClient()?.secret
+    }
+
+    /// Reads the `gog` CLI's stored OAuth client (`~/Library/Application Support/gogcli/
+    /// credentials.json`). Supports gog's flat shape as well as Google's `installed` / `web`
+    /// wrappers. Returns nil if gog isn't set up.
+    private static func gogClient() -> (id: String, secret: String)? {
+        let path = ("~/Library/Application Support/gogcli/credentials.json" as NSString).expandingTildeInPath
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let root = (json["installed"] as? [String: Any]) ?? (json["web"] as? [String: Any]) ?? json
+        guard let id = root["client_id"] as? String, !id.isEmpty,
+              let secret = root["client_secret"] as? String, !secret.isEmpty else { return nil }
+        return (id, secret)
+    }
+    /// Gmail search query bounding what gets pulled (Gmail search syntax). Defaults to recent,
+    /// non-promotional primary mail.
+    static var gmailQuery: String {
+        (gmail["query"] as? String) ?? "newer_than:30d -category:promotions -category:social"
+    }
+    /// Cap on how many messages a single pull imports.
+    static var gmailMaxMessages: Int { (gmail["maxMessages"] as? Int) ?? 50 }
+    private static var gmail: [String: Any] { (raw()["gmail"] as? [String: Any]) ?? [:] }
+
     // MARK: - Storage backend (plan 10)
     /// "json" (default) or "sqlite". In sqlite mode, memories + segments are stored in nemo.db
     /// (indexed, FTS) and also mirrored to JSON as a backup for easy rollback.

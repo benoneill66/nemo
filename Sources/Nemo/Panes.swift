@@ -909,6 +909,7 @@ struct ImportPane: View {
             }
             ScrollView {
                 LazyVStack(spacing: 12) {
+                    GmailCard()
                     ForEach(state.importSources) { src in
                         HStack(spacing: 12) {
                             Image(systemName: src.assistant == "claude" ? "sparkle" : "doc.text")
@@ -934,5 +935,45 @@ struct ImportPane: View {
             }
         }
         .padding(20).glassCard(cornerRadius: 22)
+    }
+}
+
+/// Connect a Gmail account and pull recent mail into memory.
+struct GmailCard: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "envelope.fill")
+                .font(.system(size: 20)).foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Gmail").font(.system(size: 14, weight: .semibold))
+                Text(subtitle)
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            if !state.gmailConfigured {
+                Text("Configure in config.json")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            } else if state.gmailConnected {
+                GlassButton(title: "Disconnect", systemImage: "xmark.circle") { state.disconnectGmail() }
+                    .frame(width: 130).disabled(state.gmailBusy)
+                GlassButton(title: "Pull mail", systemImage: "square.and.arrow.down") { state.importGmail() }
+                    .frame(width: 120).disabled(state.gmailBusy || state.isImporting)
+            } else {
+                GlassButton(title: "Connect", systemImage: "link") { state.connectGmail() }
+                    .frame(width: 120).disabled(state.gmailBusy)
+            }
+        }
+        .padding(14).glassCard(cornerRadius: 16, tintHue: 0.02)
+    }
+
+    private var subtitle: String {
+        if !state.gmailConfigured {
+            return "Sign into the gog CLI (or add a \"gmail\" OAuth client to config.json) to enable."
+        }
+        if state.gmailBusy { return "Working…" }
+        if state.gmailConnected { return state.gmailAccount.map { "Connected · \($0)" } ?? "Connected" }
+        return "Read-only. Pulls recent mail and distills it into memory."
     }
 }

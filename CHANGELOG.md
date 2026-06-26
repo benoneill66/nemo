@@ -6,6 +6,18 @@ All notable changes to Nemo are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Gmail context import.** Link a Gmail account (read-only) from the **Import** tab and pull
+  recent mail straight into memory. Auth uses Google's OAuth **loopback** flow — Nemo opens
+  your browser, you approve, and a refresh token is stored locally (`0600`); no password and no
+  embedded webview. If the `gog` CLI is set up, Nemo **reuses its stored OAuth client**, so no
+  Google Cloud registration is needed — just click Connect. Pulled mail runs through the same
+  import pipeline as file/assistant sources, so inbox commitments, people, and decisions become
+  categorized, linked memories. Optionally override with a `"gmail"` OAuth client block (or
+  `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET`) in `config.json`; bound what's pulled with
+  `query` / `maxMessages`.
+
 ## [1.2.0] — 2026-06-26
 
 ### Added

@@ -88,6 +88,25 @@ enum ContextImporter {
                                                         onProgress: onProgress)
     }
 
+    // MARK: - Gmail import
+
+    /// Distills a batch of pulled Gmail messages into the memory graph, reusing the same
+    /// concurrent import path as file/assistant sources. New memories are tagged `import:gmail`.
+    /// `onProgress(done, total)` reports chunk completion for the UI.
+    static func importGmail(_ messages: [GmailService.Message], into existing: [Memory], model: String?,
+                            onProgress: @Sendable @escaping (Int, Int) -> Void = { _, _ in })
+    async throws -> Consolidator.Output {
+        let blob = messages.map(\.asContext).joined(separator: "\n\n")
+        guard !blob.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "Nemo", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "No readable mail to import."])
+        }
+        let batches = chunked(blob, maxChars: 40_000).map { [TranscriptSegment(text: $0, start: Date(), end: Date())] }
+        return await Consolidator.consolidateConcurrent(batches: batches, existing: existing,
+                                                        model: model, importedFrom: "gmail",
+                                                        onProgress: onProgress)
+    }
+
     // MARK: - Structured (no-LLM) import
 
     /// Claude's memory files are already one-fact-per-file with frontmatter and `[[links]]`.

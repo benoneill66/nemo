@@ -24,6 +24,9 @@ final class AppState: ObservableObject {
     @Published private(set) var isDeduping = false           // graph maintenance in flight (plan 03)
     @Published private(set) var lastAnswer: String?        // last spoken "hey Nemo" reply
     @Published private(set) var importSources: [ContextImporter.Source] = []
+    @Published private(set) var gmailConnected = GmailService.isConnected   // Gmail linked (plan 15)
+    @Published private(set) var gmailAccount: String? = GmailService.connectedAccount
+    @Published private(set) var gmailBusy = false                           // connecting or pulling
     @Published private(set) var surfaced: [SurfacedMemory] = []  // relevant-right-now memories
     @Published private(set) var briefing: Briefing?              // today's morning briefing
     @Published private(set) var isBriefing = false
@@ -648,6 +651,86 @@ final class AppState: ObservableObject {
                 await MainActor.run {
                     self.isImporting = false
                     self.statusText = "Import failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    // MARK: - Gmail context (plan 15)
+
+    /// Is the Gmail integration usable (OAuth client configured in config.json)?
+    var gmailConfigured: Bool { GmailService.isConfigured }
+
+    /// Runs the OAuth consent flow in the browser and links the account.
+    func connectGmail() {
+        guard !gmailBusy else { return }
+        guard GmailService.isConfigured else {
+            statusText = GmailService.GmailError.notConfigured.localizedDescription
+            return
+        }
+        gmailBusy = true
+        statusText = "Connecting to Gmail… approve the request in your browser."
+        Task {
+            do {
+                try await GmailService.connect()
+                await MainActor.run {
+                    self.gmailConnected = GmailService.isConnected
+                    self.gmailAccount = GmailService.connectedAccount
+                    self.gmailBusy = false
+                    self.statusText = "Connected to Gmail\(self.gmailAccount.map { " (\($0))" } ?? "")."
+                }
+            } catch {
+                await MainActor.run {
+                    self.gmailBusy = false
+                    self.statusText = "Gmail: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Unlinks the account locally.
+    func disconnectGmail() {
+        GmailService.disconnect()
+        gmailConnected = false
+        gmailAccount = nil
+        statusText = "Disconnected Gmail."
+    }
+
+    /// Pulls recent mail and folds it into memory through the import pipeline.
+    func importGmail() {
+        guard !gmailBusy, !isImporting, !isConsolidating, !isDeduping else { return }
+        guard GmailService.isConnected else { statusText = "Connect Gmail first."; return }
+        gmailBusy = true
+        isImporting = true
+        statusText = "Pulling mail from Gmail…"
+        let snapshot = memories
+        let model = Config.memoryModel
+        let query = Config.gmailQuery
+        let max = Config.gmailMaxMessages
+        Task {
+            do {
+                let messages = try await GmailService.fetchRecent(query: query, max: max) { done, total in
+                    Task { @MainActor in self.statusText = "Reading mail… \(done)/\(total)" }
+                }
+                guard !messages.isEmpty else {
+                    await MainActor.run {
+                        self.gmailBusy = false; self.isImporting = false
+                        self.statusText = "No mail matched the Gmail query."
+                    }
+                    return
+                }
+                let out = try await ContextImporter.importGmail(messages, into: snapshot, model: model) { done, total in
+                    Task { @MainActor in self.statusText = "Distilling mail… \(done)/\(total)" }
+                }
+                await MainActor.run {
+                    self.applyMemoryResult(out.memories, base: snapshot)
+                    self.gmailBusy = false; self.isImporting = false
+                    self.statusText = "Imported \(messages.count) emails: +\(out.created) new, \(out.updated) updated"
+                }
+            } catch {
+                await MainActor.run {
+                    self.gmailBusy = false; self.isImporting = false
+                    self.statusText = "Gmail import failed: \(error.localizedDescription)"
                 }
             }
         }

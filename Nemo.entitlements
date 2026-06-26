@@ -9,6 +9,9 @@
          and reaching the network under a hardened runtime. -->
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Loopback HTTP listener (127.0.0.1) that catches the Gmail OAuth redirect. -->
+    <key>com.apple.security.network.server</key>
+    <true/>
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
