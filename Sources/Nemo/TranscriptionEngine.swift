@@ -15,6 +15,7 @@ final class TranscriptionEngine: NSObject, SpeechEngine {
     /// A finalized chunk of speech with timing and (optionally) a voice fingerprint.
     var onSegment: ((_ text: String, _ start: Date, _ end: Date, _ voice: VoiceFingerprint?) -> Void)?
     var onStatus: ((SpeechEngineStatus) -> Void)?
+    var onLevel: ((Float) -> Void)?
     let displayName = "Standard recognition"
 
     // Voice fingerprinting for speaker diarization (nil when disabled in config).
@@ -110,6 +111,8 @@ final class TranscriptionEngine: NSObject, SpeechEngine {
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                 self?.request?.append(buffer)
                 profiler?.append(buffer)
+                let level = micLevel(from: buffer)
+                DispatchQueue.main.async { self?.onLevel?(level) }
             }
             tapInstalled = true
             audioEngine.prepare()

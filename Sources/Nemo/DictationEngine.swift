@@ -12,6 +12,7 @@ final class DictationEngine: NSObject, SpeechEngine {
     var onPartial: ((String) -> Void)?
     var onSegment: ((_ text: String, _ start: Date, _ end: Date, _ voice: VoiceFingerprint?) -> Void)?
     var onStatus: ((SpeechEngineStatus) -> Void)?
+    var onLevel: ((Float) -> Void)?
     let displayName = "Enhanced dictation"
 
     static var isSupported: Bool { SpeechTranscriber.isAvailable }
@@ -130,8 +131,10 @@ final class DictationEngine: NSObject, SpeechEngine {
 
         // The tap fires on a realtime audio thread, so it captures everything it needs as
         // plain locals — it must never touch main-actor state (doing so traps the process).
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             profiler?.append(buffer)
+            let level = micLevel(from: buffer)
+            DispatchQueue.main.async { self?.onLevel?(level) }
             let ratio = outFormat.sampleRate / buffer.format.sampleRate
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
             guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return }

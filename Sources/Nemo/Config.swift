@@ -155,6 +155,13 @@ enum Config {
     static var mcpEnabled: Bool { bool("mcp", default: true) }
     static var mcpAllowWrite: Bool { bool("mcpAllowWrite", default: false) }
 
+    // MARK: - Floating overlay (plan 14)
+    /// Show a persistent floating "listening" bar (Wispr-style) while Nemo is capturing.
+    /// Set "overlay": false in config.json to disable it entirely.
+    static var overlayEnabled: Bool { bool("overlay", default: true) }
+    /// Keep the bar on screen even when paused/idle (dimmed), instead of hiding it.
+    static var overlayAlwaysVisible: Bool { bool("overlayAlwaysVisible", default: false) }
+
     // MARK: - Storage backend (plan 10)
     /// "json" (default) or "sqlite". In sqlite mode, memories + segments are stored in nemo.db
     /// (indexed, FTS) and also mirrored to JSON as a backup for easy rollback.

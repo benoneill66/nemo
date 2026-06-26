@@ -18,6 +18,7 @@ final class AppState: ObservableObject {
     @Published private(set) var listening = false
     @Published private(set) var statusText = "Idle"
     @Published private(set) var partialText = ""           // what's being heard right now
+    @Published private(set) var audioLevel: Float = 0      // smoothed 0…1 mic loudness (drives the overlay waveform)
     @Published private(set) var isConsolidating = false
     @Published private(set) var isImporting = false
     @Published private(set) var isDeduping = false           // graph maintenance in flight (plan 03)
@@ -48,6 +49,7 @@ final class AppState: ObservableObject {
     private var createdSinceDedupe = 0    // new memories since the last dedupe pass (plan 03)
     private var pauseTimer: Timer?        // auto-resume after a timed pause (plan 06)
     private var autoPausedForApp = false  // paused because a sensitive app came to front (plan 06)
+    private var overlay: OverlayController?  // floating "listening" bar (plan 14)
 
     private let wakePrefixes = ["hey ", "hey, ", "okay ", "ok ", "hi ", "yo "]
 
@@ -78,6 +80,13 @@ final class AppState: ObservableObject {
         engine.onSegment = { [weak self] text, start, end, voice in
             self?.ingest(text: text, start: start, end: end, voice: voice)
         }
+        // Smooth the raw per-buffer level so the waveform glides rather than jitters.
+        engine.onLevel = { [weak self] lvl in
+            guard let self else { return }
+            self.audioLevel = self.audioLevel * 0.55 + lvl * 0.45
+        }
+
+        overlay = OverlayController(state: self)   // persistent floating bar (plan 14)
     }
 
     // MARK: - Derived
@@ -116,6 +125,7 @@ final class AppState: ObservableObject {
         surfaceTimer?.invalidate(); surfaceTimer = nil
         listening = false
         partialText = ""
+        audioLevel = 0
         statusText = "Paused"
     }
 
@@ -171,8 +181,10 @@ final class AppState: ObservableObject {
             statusText = inMeeting ? "In meeting — listening" : "Listening"
         case .stopped:
             listening = false
+            audioLevel = 0
         case .needsAuth(let m), .unavailable(let m):
             listening = false
+            audioLevel = 0
             statusText = m
         }
     }
