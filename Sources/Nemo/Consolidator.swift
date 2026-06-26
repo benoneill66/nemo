@@ -329,6 +329,18 @@ enum Consolidator {
         if !memories[b].links.contains(idA) { memories[b].links.append(idA) }
     }
 
+    /// Above this many memories sharing one entity, the full pairwise mesh is abandoned for a star.
+    /// Matches the graph view's `graphEdges` threshold so storage and rendering agree.
+    static let entityLinkMeshLimit = 6
+
+    /// Link memories that share a named entity. Small clusters get a full mesh; large ones fall back
+    /// to a *star* — every member linked to one hub — so a popular entity (a person named in
+    /// hundreds of memories) adds O(k) links instead of O(k²), keeping both the persisted `links`
+    /// arrays and every whole-set save bounded. The hub is the lowest-id member, chosen
+    /// deterministically so repeated consolidation rounds converge on the same star rather than
+    /// accumulating hub links. (A cluster that crosses the threshold keeps the ≤15 mesh links it had
+    /// while small; the quadratic blow-up that matters only happens in the large regime, which stays
+    /// a star.)
     private static func linkByEntity(_ memories: inout [Memory]) {
         var index: [String: [Int]] = [:]
         for (i, m) in memories.enumerated() {
@@ -337,8 +349,13 @@ enum Consolidator {
             }
         }
         for (_, idxs) in index where idxs.count > 1 {
-            for i in 0..<idxs.count {
-                for j in (i + 1)..<idxs.count { link(&memories, idxs[i], idxs[j]) }
+            if idxs.count <= entityLinkMeshLimit {
+                for i in 0..<idxs.count {
+                    for j in (i + 1)..<idxs.count { link(&memories, idxs[i], idxs[j]) }
+                }
+            } else {
+                let hub = idxs.min { memories[$0].id.uuidString < memories[$1].id.uuidString }!
+                for other in idxs where other != hub { link(&memories, hub, other) }
             }
         }
     }

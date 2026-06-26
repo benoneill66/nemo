@@ -151,6 +151,14 @@ enum Config {
     static var autoExportTasks: Bool { bool("autoExportTasks", default: false) }
     static var remindersListName: String { (raw()["remindersListName"] as? String) ?? "Nemo" }
 
+    // MARK: - Calendar import (sync events into memory)
+    /// How far back / forward (in days) a calendar sync reads events from the user's macOS calendars,
+    /// the per-sync event cap, and an optional whitelist of calendar names (empty = all calendars).
+    static var calendarImportPastDays: Int { int("calendarImportPastDays", default: 7) }
+    static var calendarImportFutureDays: Int { int("calendarImportFutureDays", default: 30) }
+    static var calendarImportMax: Int { int("calendarImportMax", default: 100) }
+    static var calendarImportCalendars: [String] { (raw()["calendarImportCalendars"] as? [String]) ?? [] }
+
     // MARK: - MCP server (plan 12)
     static var mcpEnabled: Bool { bool("mcp", default: true) }
     static var mcpAllowWrite: Bool { bool("mcpAllowWrite", default: false) }
@@ -207,9 +215,4 @@ enum Config {
     /// Set "people": false in config.json to disable the LLM enrichment pass (the directory then
     /// only grows from named speakers and manual edits).
     static var peopleEnabled: Bool { bool("people", default: true) }
-
-    // MARK: - Storage backend (plan 10)
-    /// "json" (default) or "sqlite". In sqlite mode, memories + segments are stored in nemo.db
-    /// (indexed, FTS) and also mirrored to JSON as a backup for easy rollback.
-    static var storageBackend: String { ((raw()["storageBackend"] as? String) ?? "json").lowercased() }
 }

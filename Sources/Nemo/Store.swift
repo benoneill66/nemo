@@ -54,17 +54,17 @@ enum Store {
         }
     }
 
-    // MARK: - SQLite backend (plan 10) — opt-in via Config.storageBackend == "sqlite".
+    // MARK: - SQLite backend (plan 10) — the sole store for memories + transcript segments.
+    // JSON for these two is read once to seed the DB on upgrade, then frozen as a backup. If the DB
+    // can't be opened (e.g. disk failure) we fall back to the JSON files so the app still runs.
 
     private static let sqlite: SQLiteStore? = {
-        guard Config.storageBackend == "sqlite" else { return nil }
         let store = SQLiteStore(path: dir.appendingPathComponent("nemo.db").path)
         // One-time migration from existing JSON; JSON files are left in place as a backup.
         store?.migrateFromJSONIfEmpty(memories: load(memoriesURL, [Memory].self) ?? [],
                                       segments: load(segmentsURL, [TranscriptSegment].self) ?? [])
         return store
     }()
-    private static var useSQLite: Bool { sqlite != nil }
 
     static func loadSegments() -> [TranscriptSegment] {
         if let s = sqlite { return s.loadSegments() }
@@ -81,12 +81,10 @@ enum Store {
     static func loadPeople() -> [Person] { load(peopleURL, [Person].self) ?? [] }
 
     static func saveSegments(_ v: [TranscriptSegment]) {
-        if let s = sqlite { s.saveSegments(v) }   // primary store
-        save(v, to: segmentsURL)                   // JSON mirror / backup (also default backend)
+        if let s = sqlite { s.saveSegments(v) } else { save(v, to: segmentsURL) }   // JSON only if DB unavailable
     }
     static func saveMemories(_ v: [Memory]) {
-        if let s = sqlite { s.saveMemories(v) }
-        save(v, to: memoriesURL)
+        if let s = sqlite { s.saveMemories(v) } else { save(v, to: memoriesURL) }
     }
     static func saveSessions(_ v: [Session]) { save(v, to: sessionsURL) }
     static func saveBriefing(_ v: Briefing) { save(v, to: briefingURL) }

@@ -978,6 +978,7 @@ struct ImportPane: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     GmailCard()
+                    CalendarCard()
                     ForEach(state.importSources) { src in
                         HStack(spacing: 12) {
                             Image(systemName: src.assistant == "claude" ? "sparkle" : "doc.text")
@@ -1043,5 +1044,35 @@ struct GmailCard: View {
         if state.gmailBusy { return "Working…" }
         if state.gmailConnected { return state.gmailAccount.map { "Connected · \($0)" } ?? "Connected" }
         return "Read-only. Pulls recent mail and distills it into memory."
+    }
+}
+
+/// Sync the user's macOS calendars (Google/iCloud/Exchange) into memory.
+struct CalendarCard: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "calendar")
+                .font(.system(size: 20)).foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Calendar").font(.system(size: 14, weight: .semibold))
+                Text(subtitle)
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            GlassButton(title: state.calendarHasAccess ? "Sync" : "Sync calendar",
+                        systemImage: "square.and.arrow.down") { state.syncCalendar() }
+                .frame(width: 130).disabled(state.calendarBusy || state.isImporting)
+        }
+        .padding(14).glassCard(cornerRadius: 16, tintHue: 0.6)
+    }
+
+    private var subtitle: String {
+        if state.calendarBusy { return "Working…" }
+        if !state.calendarHasAccess {
+            return "Read-only. Grant access to fold recent & upcoming events into memory."
+        }
+        return "Read-only. Folds recent & upcoming events into memory."
     }
 }

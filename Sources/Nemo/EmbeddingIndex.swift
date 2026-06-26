@@ -53,6 +53,10 @@ final class EmbeddingIndex {
     /// Eagerly drop a memory's vector (e.g. on delete) so it can't surface before the next sync.
     func remove(_ id: UUID) { vectors[id] = nil; hashes[id] = nil }
 
+    /// The stored unit vector for a memory, if embedded — used by maintenance to block candidate
+    /// pairs semantically without an O(n²) scan (plan 03).
+    func storedVector(_ id: UUID) -> [Double]? { vectors[id] }
+
     /// Cosine similarity between two indexed memories, or nil if either isn't embedded (plan 03).
     func cosine(_ a: UUID, _ b: UUID) -> Double? {
         guard let va = vectors[a], let vb = vectors[b], va.count == vb.count else { return nil }

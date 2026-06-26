@@ -31,6 +31,8 @@ final class AppState: ObservableObject {
     @Published private(set) var gmailConnected = GmailService.isConnected   // Gmail linked (plan 15)
     @Published private(set) var gmailAccount: String? = GmailService.connectedAccount
     @Published private(set) var gmailBusy = false                           // connecting or pulling
+    @Published private(set) var calendarBusy = false                        // calendar sync in flight
+    @Published private(set) var calendarHasAccess = CalendarService.hasAccess  // EventKit event access
     @Published private(set) var surfaced: [SurfacedMemory] = []  // relevant-right-now memories
     @Published private(set) var briefing: Briefing?              // today's morning briefing
     @Published private(set) var isBriefing = false
@@ -45,6 +47,7 @@ final class AppState: ObservableObject {
     private let diarizer = SpeakerDiarizer(threshold: Float(Config.speakerThreshold))
     private let embeddings = EmbeddingIndex()   // on-device semantic index (plans 01, 11)
     private let eventKit = EventKitExporter()    // Reminders export (plan 13)
+    private let calendar = CalendarService()      // Calendar sync into memory
 
     /// Which transcription backend is active (shown in the UI).
     var engineName: String { engine.displayName }
@@ -1032,6 +1035,51 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Calendar sync
+
+    /// Reads events from the user's macOS calendars (which already sync Google/iCloud/Exchange)
+    /// and folds them into memory through the import pipeline. Requests calendar access on first use.
+    func syncCalendar() {
+        guard !calendarBusy, !isImporting, !isConsolidating, !isDeduping else { return }
+        calendarBusy = true
+        isImporting = true
+        statusText = "Syncing your calendar…"
+        let snapshot = memories
+        let model = Config.memoryModel
+        let pastDays = Config.calendarImportPastDays
+        let futureDays = Config.calendarImportFutureDays
+        let max = Config.calendarImportMax
+        let names = Config.calendarImportCalendars
+        Task {
+            do {
+                let events = try await calendar.fetchEvents(pastDays: pastDays, futureDays: futureDays,
+                                                            max: max, calendarNames: names)
+                await MainActor.run { self.calendarHasAccess = CalendarService.hasAccess }
+                guard !events.isEmpty else {
+                    await MainActor.run {
+                        self.calendarBusy = false; self.isImporting = false
+                        self.statusText = "No calendar events in the sync window."
+                    }
+                    return
+                }
+                let out = try await ContextImporter.importCalendar(events, into: snapshot, model: model) { done, total in
+                    Task { @MainActor in self.statusText = "Distilling events… \(done)/\(total)" }
+                }
+                await MainActor.run {
+                    self.applyMemoryResult(out.memories, base: snapshot)
+                    self.calendarBusy = false; self.isImporting = false
+                    self.statusText = "Synced \(events.count) events: +\(out.created) new, \(out.updated) updated"
+                }
+            } catch {
+                await MainActor.run {
+                    self.calendarHasAccess = CalendarService.hasAccess
+                    self.calendarBusy = false; self.isImporting = false
+                    self.statusText = "Calendar sync failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     // MARK: - Spoken answers ("hey Nemo …")
 
     /// Retrieve the user's own memories most relevant to a spoken question — union of semantic
@@ -1224,9 +1272,10 @@ final class AppState: ObservableObject {
         guard Config.dedupeEnabled, !isConsolidating, !isDeduping, !isImporting, memories.count > 1 else { return }
         let snapshot = memories
         let cosine: (Int, Int) -> Double? = { i, j in self.embeddings.cosine(snapshot[i].id, snapshot[j].id) }
+        let vector: (Int) -> [Double]? = { i in self.embeddings.storedVector(snapshot[i].id) }
         let pairs = Config.contradictionDetectionEnabled
-            ? Consolidator.maintenancePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine)
-            : Consolidator.candidatePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine)
+            ? Consolidator.maintenancePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine, vector: vector)
+            : Consolidator.candidatePairs(snapshot, cosine: cosine, cosineThreshold: Config.dedupeCosine, vector: vector)
         guard !pairs.isEmpty else { return }
 
         isDeduping = true

@@ -21,20 +21,46 @@ extension Consolidator {
 
     /// Index pairs likely to be duplicates: embedding cosine ≥ threshold when available, else a
     /// shared-entity + high token-Jaccard fallback. Skips archived (superseded) memories.
+    ///
+    /// To avoid an O(n²) all-pairs scan as the graph grows, candidates are drawn from *blocks*
+    /// rather than every pair (plan 03): memories sharing a named entity, plus — when embeddings
+    /// are supplied via `vector` — memories that land near each other under a sorted-neighbourhood
+    /// pass over random projections of their vectors. Only within-block pairs are tested against the
+    /// same qualification rule as before, so precision is unchanged while the work drops to roughly
+    /// O(n·block). When `vector` is nil (embeddings unavailable / tests) it falls back to the exact
+    /// exhaustive scan, so small-scale behaviour is identical.
     static func candidatePairs(_ memories: [Memory],
                                cosine: (Int, Int) -> Double?,
                                cosineThreshold: Double,
-                               jaccardThreshold: Double = 0.6) -> [(Int, Int)] {
-        var pairs: [(Int, Int)] = []
+                               jaccardThreshold: Double = 0.6,
+                               vector: ((Int) -> [Double]?)? = nil,
+                               maxBlock: Int = 48) -> [(Int, Int)] {
         let toks = memories.map { memTokens($0) }
-        for i in 0..<memories.count where !memories[i].superseded {
-            for j in (i + 1)..<memories.count where !memories[j].superseded {
-                if let c = cosine(i, j) {
-                    if c >= cosineThreshold { pairs.append((i, j)) }
-                } else if sharesEntity(memories[i], memories[j]),
-                          jaccard(toks[i], toks[j]) >= jaccardThreshold {
-                    pairs.append((i, j))
-                }
+        let live = Set(memories.indices.filter { !memories[$0].superseded })
+        var seen = Set<Int64>()
+        var pairs: [(Int, Int)] = []
+
+        func qualifies(_ i: Int, _ j: Int) -> Bool {
+            if let c = cosine(i, j) { return c >= cosineThreshold }
+            return sharesEntity(memories[i], memories[j]) && jaccard(toks[i], toks[j]) >= jaccardThreshold
+        }
+        func add(_ i: Int, _ j: Int) {
+            let a = min(i, j), b = max(i, j)
+            guard a != b, live.contains(a), live.contains(b) else { return }
+            let key = Int64(a) << 32 | Int64(b)
+            guard seen.insert(key).inserted else { return }
+            if qualifies(a, b) { pairs.append((a, b)) } else { /* keep the key: don't retest */ }
+        }
+
+        if let vector {
+            for bucket in entityBuckets(memories) { eachBlockedPair(bucket, maxBlock: maxBlock, add) }
+            for bucket in semanticBuckets(memories.count, vector: vector, maxBlock: maxBlock) {
+                eachBlockedPair(bucket, maxBlock: maxBlock, add)
+            }
+        } else {
+            // No embeddings: exact exhaustive scan (the historical path; graphs here are small).
+            for i in 0..<memories.count where live.contains(i) {
+                for j in (i + 1)..<memories.count where live.contains(j) { add(i, j) }
             }
         }
         return pairs
@@ -46,12 +72,21 @@ extension Consolidator {
         [Category.decisions, .tasks, .facts, .questions].map { $0.rawValue }.reduce(into: Set()) { $0.insert($1) }
 
     /// Nominate pairs that may *contradict* rather than duplicate: same named entity, both in an
-    /// actionable category. The LLM decides whether one actually supersedes the other.
-    static func contradictionPairs(_ memories: [Memory]) -> [(Int, Int)] {
-        var pairs: [(Int, Int)] = []
-        for i in 0..<memories.count where !memories[i].superseded && actionableCategories.contains(memories[i].category) {
-            for j in (i + 1)..<memories.count where !memories[j].superseded && actionableCategories.contains(memories[j].category) {
-                if sharesEntity(memories[i], memories[j]) { pairs.append((i, j)) }
+    /// actionable category. The LLM decides whether one actually supersedes the other. Entity-blocked
+    /// — only memories sharing an entity are ever compared — so this is O(Σ block²), not O(n²), while
+    /// nominating exactly the same pairs as a full scan would.
+    static func contradictionPairs(_ memories: [Memory], maxBlock: Int = 48) -> [(Int, Int)] {
+        var byEntity: [String: [Int]] = [:]
+        for i in memories.indices where !memories[i].superseded && actionableCategories.contains(memories[i].category) {
+            for e in memories[i].entities where !e.isEmpty { byEntity[e.lowercased(), default: []].append(i) }
+        }
+        var seen = Set<Int64>(); var pairs: [(Int, Int)] = []
+        for (_, idxs) in byEntity {
+            let uniq = Array(Set(idxs)).sorted()
+            guard uniq.count > 1 else { continue }
+            eachBlockedPair(uniq, maxBlock: maxBlock) { i, j in
+                let a = min(i, j), b = max(i, j)
+                if seen.insert(Int64(a) << 32 | Int64(b)).inserted { pairs.append((a, b)) }
             }
         }
         return pairs
@@ -59,8 +94,9 @@ extension Consolidator {
 
     /// Union of duplicate and contradiction candidates, de-duplicated by unordered index pair.
     static func maintenancePairs(_ memories: [Memory], cosine: (Int, Int) -> Double?,
-                                 cosineThreshold: Double) -> [(Int, Int)] {
-        let dup = candidatePairs(memories, cosine: cosine, cosineThreshold: cosineThreshold)
+                                 cosineThreshold: Double,
+                                 vector: ((Int) -> [Double]?)? = nil) -> [(Int, Int)] {
+        let dup = candidatePairs(memories, cosine: cosine, cosineThreshold: cosineThreshold, vector: vector)
         let con = contradictionPairs(memories)
         var seen = Set<String>(); var out: [(Int, Int)] = []
         for p in dup + con {
@@ -68,6 +104,67 @@ extension Consolidator {
             if seen.insert(key).inserted { out.append((min(p.0, p.1), max(p.0, p.1))) }
         }
         return out
+    }
+
+    // MARK: - Blocking helpers (sub-quadratic candidate generation)
+
+    /// Memory indices grouped by shared normalized entity (clusters of ≥2). Each memory appears in
+    /// every bucket for an entity it names; callers de-dupe emitted pairs.
+    private static func entityBuckets(_ memories: [Memory]) -> [[Int]] {
+        var byEntity: [String: [Int]] = [:]
+        for i in memories.indices {
+            // Match `sharesEntity` exactly (no length filter) so blocking never drops a candidate the
+            // old all-pairs scan would have found — e.g. a short entity like "Q3" or "AI".
+            for e in memories[i].entities where !e.isEmpty { byEntity[e.lowercased(), default: []].append(i) }
+        }
+        return byEntity.values.map { Array(Set($0)) }.filter { $0.count > 1 }
+    }
+
+    /// Emit every within-block pair. Small blocks fan out fully; an oversized block (a popular
+    /// entity, a dense projection band) is bounded to a sliding window of width `maxBlock` so one hot
+    /// cluster can't reintroduce O(k²) work.
+    private static func eachBlockedPair(_ block: [Int], maxBlock: Int, _ body: (Int, Int) -> Void) {
+        if block.count <= maxBlock {
+            for i in 0..<block.count { for j in (i + 1)..<block.count { body(block[i], block[j]) } }
+        } else {
+            for i in 0..<block.count {
+                let upper = min(block.count, i + 1 + maxBlock)
+                for j in (i + 1)..<upper { body(block[i], block[j]) }
+            }
+        }
+    }
+
+    /// Sorted-neighbourhood blocking over embedding vectors: project every embedded memory onto a
+    /// handful of fixed pseudo-random directions, sort by each projection, and bucket adjacent
+    /// memories with 50%-overlapping windows. Near-duplicate vectors are close along most directions,
+    /// so they share a window under at least one projection — yielding their pair as a candidate
+    /// without comparing all pairs. Deterministic (fixed seed) so bucketing is stable across launches.
+    private static func semanticBuckets(_ n: Int, vector: (Int) -> [Double]?,
+                                        projections: Int = 8, maxBlock: Int = 48) -> [[Int]] {
+        var idx: [Int] = []; var vecs: [[Double]] = []
+        for i in 0..<n { if let v = vector(i) { idx.append(i); vecs.append(v) } }
+        guard idx.count > 1, let dim = vecs.first?.count, dim > 0 else { return [] }
+
+        var gen = SplitMix64(seed: 0x9E3779B97F4A7C15)
+        var buckets: [[Int]] = []
+        for _ in 0..<projections {
+            var dir = [Double](repeating: 0, count: dim)
+            for k in 0..<dim { dir[k] = gen.nextUnit() }
+            let order = (0..<idx.count).sorted { lhs, rhs in
+                var sl = 0.0, sr = 0.0
+                for k in 0..<dim { sl += vecs[lhs][k] * dir[k]; sr += vecs[rhs][k] * dir[k] }
+                return sl < sr
+            }
+            var start = 0
+            let stride = max(1, maxBlock / 2)
+            while start < order.count {
+                let end = min(order.count, start + maxBlock)
+                buckets.append(order[start..<end].map { idx[$0] })
+                if end == order.count { break }
+                start += stride
+            }
+        }
+        return buckets
     }
 
     // MARK: - Maintenance (LLM adjudication: duplicate | supersedes | distinct)
@@ -212,4 +309,20 @@ extension Consolidator {
         }
         return order.compactMap { byId[$0] }
     }
+}
+
+/// Deterministic SplitMix64 — a tiny seeded PRNG so blocking projections are stable across launches
+/// (the system RNG would reshuffle buckets every run). Not cryptographic; only used for blocking.
+struct SplitMix64 {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+    /// A pseudo-random Double in [-1, 1).
+    mutating func nextUnit() -> Double { Double(next() >> 11) * (1.0 / 9_007_199_254_740_992.0) * 2 - 1 }
 }

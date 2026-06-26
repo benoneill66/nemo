@@ -35,6 +35,39 @@ final class SQLiteStoreTests: XCTestCase {
         XCTAssertEqual(store.loadMemories().first?.title, "C")
     }
 
+    /// Delta saves keep the DB exactly equal to the passed set across add / edit / remove, including
+    /// when the snapshot is seeded from disk by a fresh store rather than from a prior in-process save.
+    func testDeltaSaveAddEditRemove() throws {
+        let path = tempPath()
+        var a = Memory(title: "A", content: "a")
+        let b = Memory(title: "B", content: "b")
+        do {
+            let store = try XCTUnwrap(SQLiteStore(path: path))
+            store.saveMemories([a, b])
+        }
+        // New store: snapshot must be seeded from disk so the removal of `b` is detected.
+        let store = try XCTUnwrap(SQLiteStore(path: path))
+        XCTAssertEqual(store.memoryCount, 2)
+        a.content = "a-edited"; a.updated = Date()
+        store.saveMemories([a])                                  // edit A, drop B
+        let loaded = store.loadMemories()
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.id, a.id)
+        XCTAssertEqual(loaded.first?.content, "a-edited")
+    }
+
+    /// Editing one segment's flag leaves the FTS index intact (text unchanged ⇒ still searchable).
+    func testDeltaSaveSegmentsPreservesFTS() throws {
+        let store = try XCTUnwrap(SQLiteStore(path: tempPath()))
+        var s = TranscriptSegment(text: "the quarterly planning deadline is firm", start: Date(), end: Date())
+        store.saveSegments([s])
+        XCTAssertEqual(store.searchTranscript("planning"), [s.id])
+        s.consolidated = true                                    // non-text change
+        store.saveSegments([s])
+        XCTAssertEqual(store.searchTranscript("planning"), [s.id])   // FTS still indexes it
+        XCTAssertEqual(store.loadSegments().first?.consolidated, true)
+    }
+
     func testSegmentRoundTripAndFTS() throws {
         let store = try XCTUnwrap(SQLiteStore(path: tempPath()))
         let s1 = TranscriptSegment(text: "the quarterly planning deadline is firm", start: Date(), end: Date())

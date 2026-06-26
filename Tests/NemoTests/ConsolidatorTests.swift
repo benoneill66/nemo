@@ -73,4 +73,38 @@ final class ConsolidatorMergeTests: XCTestCase {
         XCTAssertTrue(a.links.contains(b.id))
         XCTAssertFalse(a.links.contains(a.id))  // never self-links
     }
+
+    /// A small cluster (at the mesh limit) still fully connects: every member links to every other.
+    func testSharedEntityAtMeshLimitIsFullMesh() {
+        let k = Consolidator.entityLinkMeshLimit            // 6
+        let drafts = (0..<k).map { draft("M\($0)", entities: ["Team"]) }
+        let out = Consolidator.merge(drafts: drafts, into: [], summary: nil, source: "transcript")
+        let entries = out.memories.reduce(0) { $0 + $1.links.count }
+        XCTAssertEqual(entries, k * (k - 1))                // full mesh: k*(k-1) directed entries
+        XCTAssertTrue(out.memories.allSatisfy { $0.links.count == k - 1 })  // every node degree k-1
+    }
+
+    /// A large shared-entity cluster stars instead of meshing, so links grow O(k) not O(k²) —
+    /// the fix that keeps densely-interconnected graphs cheap to store and save.
+    func testLargeSharedEntityClusterStarsInsteadOfMesh() {
+        let k = 12                                          // well above the mesh limit
+        let drafts = (0..<k).map { draft("M\($0)", entities: ["Team"]) }
+        let out = Consolidator.merge(drafts: drafts, into: [], summary: nil, source: "transcript")
+        let entries = out.memories.reduce(0) { $0 + $1.links.count }
+        XCTAssertEqual(entries, 2 * (k - 1))                // star: k-1 undirected edges, both ways
+        XCTAssertEqual(out.memories.filter { $0.links.count == k - 1 }.count, 1)  // exactly one hub
+        XCTAssertTrue(out.memories.allSatisfy { !$0.links.contains($0.id) })      // never self-links
+    }
+
+    /// The star hub is stable across rounds: re-running the link pass adds no new links.
+    func testStarHubIsStableAcrossRounds() {
+        let k = 12
+        let drafts = (0..<k).map { draft("M\($0)", entities: ["Team"]) }
+        let first = Consolidator.merge(drafts: drafts, into: [], summary: nil, source: "transcript")
+        // Feed the result back through another (empty-draft) round — relinking must be idempotent.
+        let second = Consolidator.merge(drafts: [], into: first.memories, summary: nil, source: "transcript")
+        let before = first.memories.reduce(0) { $0 + $1.links.count }
+        let after = second.memories.reduce(0) { $0 + $1.links.count }
+        XCTAssertEqual(after, before)
+    }
 }

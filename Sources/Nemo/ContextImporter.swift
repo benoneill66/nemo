@@ -107,6 +107,25 @@ enum ContextImporter {
                                                         onProgress: onProgress)
     }
 
+    // MARK: - Calendar import
+
+    /// Distills a batch of calendar events into the memory graph, reusing the same concurrent
+    /// import path as Gmail/file sources. New memories are tagged `import:calendar`.
+    /// `onProgress(done, total)` reports chunk completion for the UI.
+    static func importCalendar(_ events: [CalendarService.Event], into existing: [Memory], model: String?,
+                               onProgress: @Sendable @escaping (Int, Int) -> Void = { _, _ in })
+    async throws -> Consolidator.Output {
+        let blob = events.map(\.asContext).joined(separator: "\n\n")
+        guard !blob.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "Nemo", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "No calendar events to import."])
+        }
+        let batches = chunked(blob, maxChars: 40_000).map { [TranscriptSegment(text: $0, start: Date(), end: Date())] }
+        return await Consolidator.consolidateConcurrent(batches: batches, existing: existing,
+                                                        model: model, importedFrom: "calendar",
+                                                        onProgress: onProgress)
+    }
+
     // MARK: - Structured (no-LLM) import
 
     /// Claude's memory files are already one-fact-per-file with frontmatter and `[[links]]`.

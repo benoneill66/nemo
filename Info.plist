@@ -35,6 +35,6 @@
     <key>NSRemindersFullAccessUsageDescription</key>
     <string>Nemo can turn your spoken action items into reminders, only when you ask it to.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>Nemo can add dated commitments to your calendar, only when you ask it to.</string>
+    <string>Nemo reads your events to fold them into memory, and can add dated commitments to your calendar — only when you ask it to.</string>
 </dict>
 </plist>

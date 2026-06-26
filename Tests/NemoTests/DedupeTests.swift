@@ -23,6 +23,29 @@ final class DedupeTests: XCTestCase {
         XCTAssertEqual(pairs.count, 1)   // a&b share entity + high jaccard; c unrelated
     }
 
+    func testSemanticBlockingFindsDupWithoutSharedEntity() {
+        // Three memories, no shared entities. Vectors put 0 and 1 near-parallel, 2 orthogonal.
+        let a = Memory(title: "Q3 deadline", content: "ends Sept 30", entities: ["Q3"])
+        let b = Memory(title: "Quarterly deadline", content: "end of September", entities: ["Quarter"])
+        let c = Memory(title: "Lunch order", content: "pizza", entities: ["Food"])
+        let vecs: [[Double]] = [[1, 0], [0.99, 0.141], [0, 1]]
+        func dot(_ x: [Double], _ y: [Double]) -> Double { zip(x, y).map(*).reduce(0, +) }
+        let pairs = Consolidator.candidatePairs([a, b, c],
+            cosine: { i, j in dot(vecs[i], vecs[j]) },
+            cosineThreshold: 0.82,
+            vector: { vecs[$0] })                       // exercises the semantic-blocking path
+        XCTAssertEqual(pairs.count, 1)
+        XCTAssertEqual(pairs.first?.0, 0); XCTAssertEqual(pairs.first?.1, 1)
+    }
+
+    func testCandidatePairsSkipsSuperseded() {
+        var a = Memory(title: "Acme renewal", content: "signed", entities: ["Acme"])
+        let b = Memory(title: "Acme renewal", content: "signed", entities: ["Acme"])
+        a.superseded = true
+        let pairs = Consolidator.candidatePairs([a, b], cosine: { _, _ in nil }, cosineThreshold: 0.82)
+        XCTAssertTrue(pairs.isEmpty)                     // archived memory is never a candidate
+    }
+
     func testApplyMergesFoldsAndRepointsLinks() {
         let keep = Memory(title: "Keep", content: "k", entities: ["X"], importance: 3)
         var drop = Memory(title: "Drop", content: "d", entities: ["Y"], importance: 5)
