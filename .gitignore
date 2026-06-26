@@ -13,3 +13,6 @@ icon-1024.png
 
 # macOS
 .DS_Store
+
+# Checksum produced by the release CI
+Nemo.dmg.sha256

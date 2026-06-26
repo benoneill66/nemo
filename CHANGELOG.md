@@ -4,6 +4,37 @@ All notable changes to Nemo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-06-26
+
+### Added
+
+- **Sync your calendar into memory.** A new **Sync** button in the Import tab reads events from
+  the calendars your Mac already has — Google, iCloud, Exchange, whatever Calendar.app holds — and
+  folds them into your memory graph through the same pipeline as Gmail and file imports. It's all
+  on-device (EventKit), needs no separate sign-in, and only asks for Calendar access the first time
+  you use it; only the distilled notes ever leave the Mac. The sync window (days back/forward), a
+  per-sync event cap, and an optional list of calendars to include are all configurable.
+
+### Changed
+
+- **Nemo now scales to far larger, more interconnected memory graphs.** Several internal changes,
+  invisible day to day, that stop big memory stores from getting slow:
+  - **SQLite is now the storage engine** for memories and transcripts (it used to be opt-in). Your
+    existing data migrates automatically on first launch, and the old JSON files are left untouched
+    as a backup.
+  - **Saving is now incremental** — a change writes only what actually changed instead of rewriting
+    your entire memory store every time, so saves stay fast no matter how much you've accumulated.
+  - **Tidying memory got cheaper.** The duplicate/contradiction pass no longer compares every memory
+    against every other; it groups likely-related ones first, so the work grows roughly with the
+    number of memories rather than its square.
+  - **Popular people and projects no longer bloat the graph.** When an entity is mentioned across
+    many memories, Nemo links them through a hub instead of wiring every pair together, keeping the
+    graph compact and quick to save.
+
+### Removed
+
+- The experimental `storageBackend` config option — SQLite is now always used, so it's no longer needed.
+
 ## [1.3.1] — 2026-06-26
 
 ### Fixed
