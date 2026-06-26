@@ -170,6 +170,13 @@ struct OverlayBar: View {
                 .lineLimit(1).truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
             trailing
+            Button(action: { state.showMainWindow() }) {
+                Image(systemName: "macwindow")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .help("Open Nemo")
         }
         .padding(.horizontal, 16)
         .frame(height: 44)

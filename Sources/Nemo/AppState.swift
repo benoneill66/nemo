@@ -51,6 +51,11 @@ final class AppState: ObservableObject {
     private var autoPausedForApp = false  // paused because a sensitive app came to front (plan 06)
     private var overlay: OverlayController?  // floating "listening" bar (plan 14)
 
+    /// Reopen/raise the main window. Captured from the main scene at launch (the
+    /// `OpenWindowAction` value stays valid for the app's lifetime, so it still works
+    /// after the window has been closed). Lets the floating overlay surface the app.
+    var openMainWindow: (() -> Void)?
+
     private let wakePrefixes = ["hey ", "hey, ", "okay ", "ok ", "hi ", "yo "]
 
     init() {
@@ -106,6 +111,15 @@ final class AppState: ObservableObject {
     func memory(_ id: UUID) -> Memory? { memories.first { $0.id == id } }
     func segments(in session: Session) -> [TranscriptSegment] {
         segments.filter { $0.sessionId == session.id }
+    }
+
+    // MARK: - Window
+
+    /// Bring the main Nemo window to the front (reopening it if it was closed),
+    /// and activate the app. Used by the floating overlay's "open app" button.
+    func showMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openMainWindow?()
     }
 
     // MARK: - Listening control

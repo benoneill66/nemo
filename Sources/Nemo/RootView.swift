@@ -16,6 +16,7 @@ enum Tab: String, CaseIterable, Identifiable {
 
 struct RootView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.openWindow) private var openWindow
     @State private var tab: Tab = .live
 
     var body: some View {
@@ -33,6 +34,9 @@ struct RootView: View {
         .background(VisualEffectView(material: .underPageBackground))
         .preferredColorScheme(.dark)
         .tint(.white)
+        // Capture the window-opening action so the floating overlay can reopen/raise
+        // the main window from outside the scene graph. Stays valid for the app's lifetime.
+        .onAppear { state.openMainWindow = { openWindow(id: "main") } }
     }
 
     // MARK: Sidebar
