@@ -38,6 +38,7 @@ struct Person: Codable, Identifiable, Hashable {
 
     var pinned: Bool = false                  // user-curated: automation won't override
     var userEdited: Bool = false              // user edited name/summary: don't clobber
+    var isMe: Bool = false                    // this person is the user themselves (exactly one)
     var mergedFrom: [UUID] = []               // ids of people merged into this one (provenance)
 
     /// Every name this person answers to (canonical + aliases), lowercased.

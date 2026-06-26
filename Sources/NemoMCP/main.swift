@@ -40,6 +40,7 @@ struct MCPPerson: Decodable {
     var speakerIds: [Int]
     var mentionCount: Int
     var lastSeen: Date?
+    var isMe: Bool?
 
     var knownNames: [String] { ([name] + aliases).map { $0.lowercased() } }
 }
@@ -126,7 +127,7 @@ enum Tools {
         return ["id": p.id.uuidString, "name": p.name, "aliases": p.aliases,
                 "summary": p.summary, "attributes": p.attributes,
                 "facts": p.facts.map(\.text), "mentions": p.mentionCount,
-                "memories": mems]
+                "isMe": p.isMe ?? false, "memories": mems]
     }
 
     /// Compact person entry for listings.

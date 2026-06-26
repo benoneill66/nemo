@@ -343,10 +343,14 @@ final class AppState: ObservableObject {
     /// People sorted for display: pinned first, then by how recently they were seen.
     var sortedPeople: [Person] {
         people.sorted {
+            if $0.isMe != $1.isMe { return $0.isMe }       // the user themselves sorts first
             if $0.pinned != $1.pinned { return $0.pinned }
             return $0.lastSeen > $1.lastSeen
         }
     }
+
+    /// The person the user marked as themselves, if any.
+    var me: Person? { people.first { $0.isMe } }
 
     /// Find an existing person by an exact known-name match (case-insensitive).
     private func personIndex(named name: String) -> Int? {
@@ -436,6 +440,21 @@ final class AppState: ObservableObject {
         Store.savePeople(people)
     }
 
+    /// Mark (or unmark) a person as the user themselves. Exactly one person can be "me", so
+    /// setting a new one clears any previous. Being "me" implies user-edited so automation won't
+    /// fold this identity into a same-named person it sees later.
+    func setPersonIsMe(_ id: UUID, _ isMe: Bool) {
+        guard let idx = people.firstIndex(where: { $0.id == id }) else { return }
+        if isMe {
+            for i in people.indices where people[i].isMe { people[i].isMe = false }
+            people[idx].isMe = true
+            people[idx].userEdited = true
+        } else {
+            people[idx].isMe = false
+        }
+        Store.savePeople(people)
+    }
+
     func deletePerson(_ id: UUID) {
         // Unlink any speakers pointing at this person.
         for i in speakers.indices where speakers[i].personId == id { speakers[i].personId = nil }
@@ -471,6 +490,7 @@ final class AppState: ObservableObject {
         dest.firstSeen = min(dest.firstSeen, s.firstSeen)
         dest.lastSeen = max(dest.lastSeen, s.lastSeen)
         dest.pinned = dest.pinned || s.pinned
+        dest.isMe = dest.isMe || s.isMe
         dest.userEdited = dest.userEdited || s.userEdited
         dest.mergedFrom.append(s.id)
         dest.mergedFrom.append(contentsOf: s.mergedFrom)

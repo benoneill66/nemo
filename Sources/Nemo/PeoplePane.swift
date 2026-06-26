@@ -107,6 +107,7 @@ private struct PersonCard: View {
                         }
                     }
                     Spacer()
+                    if person.isMe { Image(systemName: "person.fill.checkmark").font(.system(size: 10)).foregroundStyle(.blue.opacity(0.95)) }
                     if person.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.yellow.opacity(0.85)) }
                 }
                 if !person.displaySummary.isEmpty {
@@ -182,7 +183,16 @@ private struct PersonDetail: View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(person: person, size: 42)
             VStack(alignment: .leading, spacing: 2) {
-                Text(person.name).font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+                HStack(spacing: 6) {
+                    Text(person.name).font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+                    if person.isMe {
+                        Text("You").font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(.blue.opacity(0.35)))
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 0.5))
+                            .foregroundStyle(.white)
+                    }
+                }
                 if !person.attributeLine.isEmpty {
                     Text(person.attributeLine).font(.system(size: 12)).foregroundStyle(.white.opacity(0.65))
                 }
@@ -278,6 +288,11 @@ private struct PersonDetail: View {
 
     private var actions: some View {
         HStack(spacing: 14) {
+            Button { state.setPersonIsMe(person.id, !person.isMe) } label: {
+                Image(systemName: person.isMe ? "person.fill.checkmark" : "person.crop.circle.badge.questionmark")
+                    .foregroundStyle(person.isMe ? .blue.opacity(0.95) : .white.opacity(0.7))
+            }.buttonStyle(.plain).help(person.isMe ? "This is you — tap to unset" : "Mark as yourself")
+
             Button { state.setPersonPinned(person.id, !person.pinned) } label: {
                 Image(systemName: person.pinned ? "pin.slash" : "pin")
                     .foregroundStyle(person.pinned ? .yellow.opacity(0.9) : .white.opacity(0.7))
