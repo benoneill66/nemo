@@ -1377,7 +1377,17 @@ final class AppState: ObservableObject {
             let now = Date()
             // Pure transforms on the snapshot (safe off the main actor's published state).
             let t = Dream.applyTriage(snapshot, verdicts, now: now)
-            let life = Dream.runLifecycle(t.memories, now: now,
+            // Abstraction: distill clusters of related episodic memories into one durable gist (LLM).
+            var abstracted = t.memories
+            var gists = 0, subsumed = 0
+            if Config.dreamAbstractEnabled {
+                let clusters = Dream.entityClusters(abstracted, minSize: Config.abstractMinClusterSize)
+                let abs = await Dream.abstract(clusters, from: abstracted, model: model,
+                                               maxClusters: Config.abstractMaxClusters)
+                let a = Dream.applyAbstractions(abstracted, abs, now: now)
+                abstracted = a.memories; gists = a.created; subsumed = a.subsumed
+            }
+            let life = Dream.runLifecycle(abstracted, now: now,
                                           episodicHalfLife: Config.episodicHalfLifeDays,
                                           semanticHalfLife: Config.decayHalfLifeDays,
                                           retentionFloor: Config.retentionFloor,
@@ -1388,9 +1398,9 @@ final class AppState: ObservableObject {
                 self.isDreaming = false
                 self.clearAssistantHealth()
                 if auto { UserDefaults.standard.set(now, forKey: Self.lastDreamKey) }
-                let recat = t.recategorized, arch = t.archived + life.archived
-                self.statusText = "Dreamt (\(life.promoted) promoted, \(recat) recategorized, "
-                    + "\(arch) archived, \(life.purged) purged)"
+                let recat = t.recategorized, arch = t.archived + subsumed + life.archived
+                self.statusText = "Dreamt (\(gists) distilled, \(life.promoted) promoted, "
+                    + "\(recat) recategorized, \(arch) archived, \(life.purged) purged)"
             }
         }
     }

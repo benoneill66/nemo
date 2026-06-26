@@ -115,6 +115,63 @@ final class DreamTests: XCTestCase {
         XCTAssertTrue(out.memories.first { $0.id == b.id }?.superseded ?? false)
     }
 
+    // MARK: - Abstraction (cluster → gist)
+
+    func testEntityClustersGroupsBySharedEntityRespectingMinSize() {
+        let now = Date()
+        var ms: [Memory] = []
+        for i in 0..<4 { var m = mem("Edge \(i)", category: .projects, now: now); m.entities = ["Edge"]; ms.append(m) }
+        var lonely = mem("Solo", category: .projects, now: now); lonely.entities = ["Other"]; ms.append(lonely)
+        let clusters = Dream.entityClusters(ms, minSize: 4)
+        XCTAssertEqual(clusters.count, 1)
+        XCTAssertEqual(clusters[0].count, 4)
+    }
+
+    func testEntityClustersSkipsUserOwnedAndSemantic() {
+        let now = Date()
+        var a = mem("A", now: now); a.entities = ["X"]; a.pinned = true
+        var b = mem("B", stage: .semantic, now: now); b.entities = ["X"]
+        var c = mem("C", now: now); c.entities = ["X"]
+        // Only one eligible episodic, non-owned member → no cluster of size 2.
+        XCTAssertTrue(Dream.entityClusters([a, b, c], minSize: 2).isEmpty)
+    }
+
+    func testApplyAbstractionsCreatesGistAndArchivesSubsumed() {
+        let now = Date()
+        let a = mem("Spec 1", category: .projects, importance: 3, now: now)
+        let b = mem("Spec 2", category: .projects, importance: 2, now: now)
+        let abs = Dream.Abstraction(memberIds: [a.id, b.id], subsumedIds: [a.id, b.id],
+                                    title: "The system", content: "gist", category: Nemo.Category.facts.rawValue,
+                                    entities: ["System"])
+        let out = Dream.applyAbstractions([a, b], [abs], now: now)
+        XCTAssertEqual(out.created, 1)
+        XCTAssertEqual(out.subsumed, 2)
+        let gist = out.memories.first { $0.source == "dream:abstract" }
+        XCTAssertNotNil(gist)
+        XCTAssertEqual(gist?.stage, .semantic)
+        XCTAssertEqual(gist?.importance, 3)                 // inherits max source importance
+        XCTAssertEqual(Set(gist?.links ?? []), Set([a.id, b.id]))
+        // Sources archived, pointing back at the gist.
+        for id in [a.id, b.id] {
+            let s = out.memories.first { $0.id == id }
+            XCTAssertTrue(s?.superseded ?? false)
+            XCTAssertEqual(s?.supersededBy, gist?.id)
+        }
+    }
+
+    func testApplyAbstractionsKeepsUserOwnedSourceLinkedNotArchived() {
+        let now = Date()
+        var a = mem("Owned", category: .projects, now: now); a.userEdited = true
+        let b = mem("Other", category: .projects, now: now)
+        let abs = Dream.Abstraction(memberIds: [a.id, b.id], subsumedIds: [a.id, b.id],
+                                    title: "Gist", content: "g", category: Nemo.Category.facts.rawValue, entities: [])
+        let out = Dream.applyAbstractions([a, b], [abs], now: now)
+        XCTAssertEqual(out.subsumed, 1)                     // only b folded in
+        let owned = out.memories.first { $0.id == a.id }
+        XCTAssertFalse(owned?.superseded ?? true)          // user-owned never archived
+        XCTAssertTrue(owned?.links.contains(out.memories.first { $0.source == "dream:abstract" }!.id) ?? false)
+    }
+
     func testApplyTriageSkipsUserEdited() {
         let now = Date()
         var edited = mem("Hands off", category: .projects, now: now)

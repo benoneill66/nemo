@@ -226,6 +226,13 @@ enum Config {
     static var episodicHalfLifeDays: Double { double("episodicHalfLifeDays", default: 10) }
     /// Surfacing hits at/above which an episodic memory is promoted to semantic (durable).
     static var promoteHitCount: Int { int("promoteHitCount", default: 3) }
+    /// Abstraction (cluster→gist): distill clusters of related episodic memories into one durable
+    /// semantic memory, archiving the subsumed specifics. Set false to keep dreams to recategorize+forget.
+    static var dreamAbstractEnabled: Bool { bool("dreamAbstract", default: true) }
+    /// Smallest entity cluster worth abstracting into a gist.
+    static var abstractMinClusterSize: Int { int("abstractMinClusterSize", default: 4) }
+    /// Most clusters abstracted per dream (bounds cost).
+    static var abstractMaxClusters: Int { int("abstractMaxClusters", default: 6) }
 
     // MARK: - People directory (plan 16)
     /// Build a first-class people directory from consolidated memories: extract people, accumulate

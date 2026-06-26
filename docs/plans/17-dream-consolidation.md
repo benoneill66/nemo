@@ -178,3 +178,11 @@ recategorized 41 Claude imports (Projects 116→77, surfacing real Decisions=28 
 soft-archived 22 ephemeral dev-trivia memories, each with a transparent `history` note. That logic
 is the seed for `Dream.swift` §2–3 and §5; this plan generalizes it from a manual script into the
 standing episodic→semantic lifecycle.
+
+## Status
+
+Shipped: tiers + retention curve, recategorize/triage, lifecycle (promote/decay/archive/demote/
+purge), abstraction (cluster→gist with subsumed-source archiving, `dreamAbstract` flag), idle
+scheduler + "Dream" button, tolerant `Memory` decoding so schema additions never wipe the store.
+Possible follow-ups: a "show sources" affordance on a gist; smarter cluster selection (embedding
+buckets in addition to entity buckets); folding the existing `maintain` dedup pass into the dream.
