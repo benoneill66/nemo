@@ -159,8 +159,9 @@ enum Config {
     /// Show a persistent floating "listening" bar (Wispr-style) while Nemo is capturing.
     /// Set "overlay": false in config.json to disable it entirely.
     static var overlayEnabled: Bool { bool("overlay", default: true) }
-    /// Keep the bar on screen even when paused/idle (dimmed), instead of hiding it.
-    static var overlayAlwaysVisible: Bool { bool("overlayAlwaysVisible", default: false) }
+    /// Keep the bar on screen the whole time the app is open (idle bar shows "Idle"),
+    /// instead of only while listening. Set "overlayAlwaysVisible": false to hide when idle.
+    static var overlayAlwaysVisible: Bool { bool("overlayAlwaysVisible", default: true) }
 
     // MARK: - Storage backend (plan 10)
     /// "json" (default) or "sqlite". In sqlite mode, memories + segments are stored in nemo.db
