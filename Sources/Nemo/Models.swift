@@ -151,6 +151,57 @@ struct Memory: Codable, Identifiable, Hashable {
 
     /// Ranking importance = user/LLM base + learned reinforcement, clamped to a sane range.
     var effectiveImportance: Double { Double(importance) + max(0, weight) }
+
+    init(id: UUID = UUID(), title: String, content: String, category: String = Category.misc.rawValue,
+         entities: [String] = [], links: [UUID] = [], importance: Int = 2, source: String = "transcript") {
+        self.id = id; self.title = title; self.content = content; self.category = category
+        self.entities = entities; self.links = links; self.importance = importance; self.source = source
+    }
+}
+
+// MARK: - Tolerant decoding
+
+/// Memory gains fields over time (plans 02/04/05/13/17…). The synthesized `Decodable` throws on any
+/// missing key, which would make a single new field wipe the whole store on upgrade (a row persisted
+/// before the field can't decode). This custom decoder treats every field as optional-with-default,
+/// so old rows — and any future schema addition — load gracefully. Encoding stays synthesized.
+extension Memory {
+    enum CodingKeys: String, CodingKey {
+        case id, title, content, category, entities, links, importance, source, created, updated
+        case hitCount, lastSurfaced, weight, pinned, userEdited, sourceSegmentIds
+        case superseded, supersededBy, history, due, exportedReminderId
+        case stage, retention, archivedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func get<T: Decodable>(_ k: CodingKeys, _ def: T) -> T { (try? c.decodeIfPresent(T.self, forKey: k)) ?? def }
+
+        id          = get(.id, UUID())
+        title       = get(.title, "")
+        content     = get(.content, "")
+        category    = get(.category, Category.misc.rawValue)
+        entities    = get(.entities, [])
+        links       = get(.links, [])
+        importance  = get(.importance, 2)
+        source      = get(.source, "transcript")
+        created     = get(.created, Date())
+        updated     = get(.updated, Date())
+        hitCount    = get(.hitCount, 0)
+        lastSurfaced = try? c.decodeIfPresent(Date.self, forKey: .lastSurfaced) ?? nil
+        weight      = get(.weight, 0)
+        pinned      = get(.pinned, false)
+        userEdited  = get(.userEdited, false)
+        sourceSegmentIds = get(.sourceSegmentIds, [])
+        superseded  = get(.superseded, false)
+        supersededBy = try? c.decodeIfPresent(UUID.self, forKey: .supersededBy) ?? nil
+        history     = get(.history, [])
+        due         = try? c.decodeIfPresent(Date.self, forKey: .due) ?? nil
+        exportedReminderId = try? c.decodeIfPresent(String.self, forKey: .exportedReminderId) ?? nil
+        stage       = get(.stage, .episodic)
+        retention   = get(.retention, 1.0)
+        archivedAt  = try? c.decodeIfPresent(Date.self, forKey: .archivedAt) ?? nil
+    }
 }
 
 // MARK: - Briefing
