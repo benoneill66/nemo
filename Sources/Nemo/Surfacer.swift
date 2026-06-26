@@ -48,6 +48,7 @@ enum Surfacer {
         case .meetings:    return 1.00
         case .ideas:       return 1.00
         case .facts:       return 1.00
+        case .reference:   return 0.95   // durable how-it-works knowledge; useful but rarely the live point
         case .misc:        return 0.90
         }
     }

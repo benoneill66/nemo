@@ -15,6 +15,7 @@ enum Category: String, CaseIterable, Codable {
     case meetings    = "Meetings"
     case ideas       = "Ideas"
     case questions   = "Open Questions"
+    case reference   = "Reference"
     case misc        = "Misc"
 
     static func match(_ raw: String) -> Category {
@@ -37,6 +38,7 @@ enum Category: String, CaseIterable, Codable {
         case .meetings:    return "person.3.sequence.fill"
         case .ideas:       return "sparkles"
         case .questions:   return "questionmark.circle.fill"
+        case .reference:   return "books.vertical.fill"
         case .misc:        return "tray.full.fill"
         }
     }
@@ -53,10 +55,18 @@ enum Category: String, CaseIterable, Codable {
         case .meetings:    return 0.52
         case .ideas:       return 0.80
         case .questions:   return 0.00
+        case .reference:   return 0.30
         case .misc:        return 0.62
         }
     }
 }
+
+// MARK: - Memory stage (plan 17)
+
+/// Human-memory tiering. New and imported memories are born `episodic` — fragile, on a fast
+/// forgetting curve — and must earn promotion to `semantic` (durable, never auto-purged) by being
+/// reinforced, important, or durable by category. Decided by the "dream" consolidation pass.
+enum MemoryStage: String, Codable, CaseIterable { case episodic, semantic }
 
 // MARK: - Transcript
 
@@ -131,6 +141,11 @@ struct Memory: Codable, Identifiable, Hashable {
     // Calendar / Reminders export (plan 13).
     var due: Date? = nil               // parsed due date for action items
     var exportedReminderId: String? = nil  // EKReminder identifier, if exported
+
+    // Human-memory model (plan 17). Codable defaults keep existing rows valid with no migration.
+    var stage: MemoryStage = .episodic // born fragile; promoted to .semantic once it earns it
+    var retention: Double = 1.0        // forgetting-curve strength (≥0); decays with time, boosted by use
+    var archivedAt: Date? = nil        // when retention fell below the floor (starts the purge clock)
 
     var categoryEnum: Category { Category.match(category) }
 

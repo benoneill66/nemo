@@ -209,6 +209,24 @@ enum Config {
     static var gmailMaxMessages: Int { (gmail["maxMessages"] as? Int) ?? 50 }
     private static var gmail: [String: Any] { (raw()["gmail"] as? [String: Any]) ?? [:] }
 
+    // MARK: - Dream consolidation: tiers, forgetting & abstraction (plan 17)
+    /// Master switch for the human-memory model (episodic→semantic tiers, forgetting curve, the
+    /// periodic "dream" consolidation pass). Off → memories behave as before plan 17.
+    static var dreamEnabled: Bool { bool("dream", default: true) }
+    /// Minimum hours between automatic dreams.
+    static var dreamMinHours: Double { double("dreamMinHours", default: 12) }
+    /// How long the app must be idle (not capturing) before an automatic dream may run.
+    static var dreamIdleMinutes: Double { double("dreamIdleMinutes", default: 20) }
+    /// Retention strength below which an episodic memory is archived (forgotten). 0 disables forgetting.
+    static var retentionFloor: Double { double("retentionFloor", default: 0.15) }
+    /// Days an archived memory lingers (restorable) before it's eligible for hard purge. 0 disables purge.
+    static var purgeGraceDays: Int { int("purgeGraceDays", default: 90) }
+    /// Fast forgetting half-life for fresh/imported episodic memories (semantic memories use the
+    /// slower `decayHalfLifeDays`).
+    static var episodicHalfLifeDays: Double { double("episodicHalfLifeDays", default: 10) }
+    /// Surfacing hits at/above which an episodic memory is promoted to semantic (durable).
+    static var promoteHitCount: Int { int("promoteHitCount", default: 3) }
+
     // MARK: - People directory (plan 16)
     /// Build a first-class people directory from consolidated memories: extract people, accumulate
     /// context about them over time, and disambiguate same-named people using prior context.

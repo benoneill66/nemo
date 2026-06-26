@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     @Published private(set) var isConsolidating = false
     @Published private(set) var isImporting = false
     @Published private(set) var isDeduping = false           // graph maintenance in flight (plan 03)
+    @Published private(set) var isDreaming = false           // dream consolidation in flight (plan 17)
     @Published private(set) var lastAnswer: String?        // last spoken "hey Nemo" reply
     @Published private(set) var importSources: [ContextImporter.Source] = []
     @Published private(set) var gmailConnected = GmailService.isConnected   // Gmail linked (plan 15)
@@ -669,7 +670,10 @@ final class AppState: ObservableObject {
         consolidateTimer?.invalidate()
         let interval = max(60, Config.consolidateMinutes * 60)
         consolidateTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.consolidateNow() }
+            Task { @MainActor in
+                self?.consolidateNow()
+                self?.maybeDream()   // dream when quiet, gated to once per dreamMinHours (plan 17)
+            }
         }
     }
 
@@ -836,6 +840,7 @@ final class AppState: ObservableObject {
                     memories[i].hitCount += 1
                     memories[i].lastSurfaced = now
                     memories[i].weight = Reinforcement.reinforced(memories[i].weight)
+                    memories[i].retention = Reinforcement.boosted(memories[i].retention)  // spaced repetition (plan 17)
                     bumped = true
                 }
             }
@@ -1118,6 +1123,7 @@ final class AppState: ObservableObject {
                 memories[i].hitCount += 1
                 memories[i].lastSurfaced = now
                 memories[i].weight = Reinforcement.reinforced(memories[i].weight)
+                memories[i].retention = Reinforcement.boosted(memories[i].retention)  // spaced repetition (plan 17)
                 changed = true
             }
         }
@@ -1331,6 +1337,62 @@ final class AppState: ObservableObject {
             if decayed != memories[i].weight { memories[i].weight = decayed; changed = true }
         }
         if changed { Store.saveMemories(memories) }
+    }
+
+    // MARK: - Dream consolidation (plan 17)
+
+    private static let lastDreamKey = "nemo.lastDream"
+
+    /// Run a dream automatically when the app is quiet: idle (not listening), nothing else in flight,
+    /// no pending segments to consolidate first, and not more often than `dreamMinHours`.
+    private func maybeDream() {
+        guard Config.dreamEnabled, !listening, !inMeeting,
+              !isConsolidating, !isImporting, !isDeduping, !isDreaming,
+              unconsolidatedCount == 0, memories.count > 1 else { return }
+        if let last = UserDefaults.standard.object(forKey: Self.lastDreamKey) as? Date,
+           Date().timeIntervalSince(last) < Config.dreamMinHours * 3600 { return }
+        dreamNow(auto: true)
+    }
+
+    /// The dream pass: recategorize + triage fragile (episodic) memories with the cheap model, then
+    /// run the pure lifecycle — promote the reinforced, decay retention, archive what's fallen below
+    /// the floor, and purge long-archived memories past the grace window. `auto` distinguishes the
+    /// scheduled run (records the cadence stamp) from a manual "Dream now".
+    func dreamNow(auto: Bool = false) {
+        guard Config.dreamEnabled, !isConsolidating, !isImporting, !isDeduping, !isDreaming,
+              memories.count > 1 else { return }
+        let snapshot = memories
+        let model = Config.gateModel
+        // Triage the fragile, low-signal memories first; cap per dream to bound cost. Most-forgettable
+        // (lowest hit count, then lowest retention) go first.
+        let candidates = snapshot
+            .filter { $0.stage == .episodic && !$0.superseded && !$0.pinned && !$0.userEdited }
+            .sorted { ($0.hitCount, $0.retention) < ($1.hitCount, $1.retention) }
+            .prefix(120)
+
+        isDreaming = true
+        statusText = "Dreaming…"
+        Task {
+            let verdicts = await Dream.triage(Array(candidates), model: model)
+            let now = Date()
+            // Pure transforms on the snapshot (safe off the main actor's published state).
+            let t = Dream.applyTriage(snapshot, verdicts, now: now)
+            let life = Dream.runLifecycle(t.memories, now: now,
+                                          episodicHalfLife: Config.episodicHalfLifeDays,
+                                          semanticHalfLife: Config.decayHalfLifeDays,
+                                          retentionFloor: Config.retentionFloor,
+                                          purgeGraceDays: Config.purgeGraceDays,
+                                          promoteHitCount: Config.promoteHitCount)
+            await MainActor.run {
+                self.applyMemoryResult(life.memories, base: snapshot)
+                self.isDreaming = false
+                self.clearAssistantHealth()
+                if auto { UserDefaults.standard.set(now, forKey: Self.lastDreamKey) }
+                let recat = t.recategorized, arch = t.archived + life.archived
+                self.statusText = "Dreamt (\(life.promoted) promoted, \(recat) recategorized, "
+                    + "\(arch) archived, \(life.purged) purged)"
+            }
+        }
     }
 
     // MARK: - Editing

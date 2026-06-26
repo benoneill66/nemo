@@ -385,6 +385,10 @@ struct MemoryPane: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
                     PaneHeader(title: "Memory", subtitle: "A rich, interconnected map of what Nemo knows about you.")
+                    GlassButton(title: state.isDreaming ? "Dreaming…" : "Dream",
+                                systemImage: "moon.stars") { state.dreamNow() }
+                        .frame(width: 130)
+                        .disabled(state.isDreaming || state.isConsolidating || state.isImporting || state.isDeduping)
                     layoutToggle
                 }
 

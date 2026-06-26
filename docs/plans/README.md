@@ -31,6 +31,7 @@ Nemo's guiding constraints — keep every plan inside these:
 | 11 | [Retrieval-augmented "Hey Nemo"](11-rag-hey-nemo.md) | Reach | M | 01 |
 | 12 | [Local MCP memory server](12-mcp-server.md) | Reach | M | — |
 | 13 | [Calendar / Reminders export](13-calendar-export.md) | Reach | S | — |
+| 17 | [Human-memory model: tiers, forgetting & "dreaming"](17-dream-consolidation.md) | Smarter memory | L | 02, 03, 04, 10 |
 
 Effort: **S** ≈ ≤1 day, **M** ≈ 2–4 days, **L** ≈ 1–2 weeks.
 
