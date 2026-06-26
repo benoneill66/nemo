@@ -50,9 +50,10 @@ struct MenuBarControl: View {
             GlassButton(title: state.listening ? "Stop Listening" : "Start Listening",
                         systemImage: state.listening ? "stop.fill" : "mic.fill",
                         prominent: !state.listening) { state.toggleListening() }
-            GlassButton(title: state.inMeeting ? "End Meeting" : "Start Meeting",
-                        systemImage: "person.3") {
-                state.inMeeting ? state.endMeeting() : state.startMeeting(title: nil)
+            GlassButton(title: state.inMeeting ? "End Meeting" : "Quick Meeting",
+                        systemImage: state.inMeeting ? "person.3.fill" : "person.3",
+                        prominent: state.inMeeting) {
+                state.inMeeting ? state.endMeeting() : state.quickStartMeeting()
             }
             if state.briefing != nil || !state.memories.isEmpty {
                 GlassButton(title: state.isBriefing ? "Briefing…" : "Morning Briefing",

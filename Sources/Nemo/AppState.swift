@@ -613,6 +613,13 @@ final class AppState: ObservableObject {
         statusText = "Meeting started: \(resolved)"
     }
 
+    /// One-tap meeting: open a meeting session and immediately begin listening so
+    /// it actually captures audio. Safe to call when already listening.
+    func quickStartMeeting(title: String? = nil) {
+        startMeeting(title: title)
+        if !listening { start() }
+    }
+
     func endMeeting() {
         guard let idx = sessions.firstIndex(where: { $0.kind == .meeting && $0.isOpen }) else { return }
         sessions[idx].end = Date()
