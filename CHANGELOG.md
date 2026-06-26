@@ -6,6 +6,21 @@ All notable changes to Nemo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-06-26
+
+### Added
+
+- **Floating "listening" overlay bar.** A borderless, always-on-top HUD that follows you
+  across Spaces and parks in the bottom-right corner whenever Nemo is open. It shows a live
+  waveform driven by the mic level and expands on its own to reflect what Nemo is doing —
+  saving to memory, importing, or surfacing a relevant memory. Tap to toggle listening,
+  drag to reposition. Disable with `"overlay": false`.
+- **Open the app from the overlay.** A window button on the overlay bar activates Nemo and
+  reopens/raises the main window — so the app is reachable even when its window is closed.
+- **Delete sessions.** Each session in the Sessions pane now has a delete button (with a
+  confirmation) that removes the session and its captured transcript segments. Memories
+  already distilled from the session are kept.
+
 ## [1.1.0] — 2026-06-25
 
 A wave of intelligence, trust, and reach features — all on-device or through your own
